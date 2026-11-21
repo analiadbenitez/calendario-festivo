@@ -8,7 +8,7 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230F2922'/%3E%3Crect x='13' y='28' width='38' height='25' rx='5' fill='%23EF4444'/%3E%3Crect x='10' y='21' width='44' height='9' rx='3.5' fill='%23DC2626'/%3E%3Crect x='28' y='21' width='8' height='32' fill='%23F59E0B'/%3E%3Crect x='13' y='37' width='38' height='6' fill='%23F59E0B'/%3E%3C/svg%3E" />
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.js"></script>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -813,6 +813,40 @@
       return `<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"><div class="w-full max-w-md rounded-3xl bg-[#181616] border-2 border-[#EF4444]/60 p-6 space-y-4"><h3 class="font-display text-xl font-bold text-white">⚠️ Confirmación (${state.resetStep}/2)</h3>${state.resetStep === 1 ? `<p class="text-sm text-[#E2D4D4]">Se eliminarán usuarios, votos, mensajes, fotos y ganadores de Supabase, y los 10 días volverán a <strong>Bloqueado</strong> conservando intactas las consignas.</p><div class="flex gap-2"><button id="btn-reset-cancel" class="flex-1 py-2.5 rounded-xl bg-white/10 text-sm font-bold text-white cursor-pointer">Cancelar</button><button id="btn-reset-next" class="flex-1 py-2.5 rounded-xl bg-[#EF4444] text-sm font-extrabold text-white cursor-pointer">Continuar</button></div>` : `<p class="text-sm text-[#E2D4D4]">Escribí <strong class="text-[#FCA5A5]">RESETEAR</strong>:</p><input id="input-reset-word" value="${esc(state.resetWord)}" placeholder="RESETEAR" class="w-full rounded-xl bg-black/50 border border-[#EF4444]/50 px-4 py-2.5 text-center font-extrabold text-white uppercase outline-none"/><div class="flex gap-2"><button id="btn-reset-cancel" class="flex-1 py-2.5 rounded-xl bg-white/10 text-sm font-bold text-white cursor-pointer">Cancelar</button><button id="btn-reset-exec" ${state.resetWord.trim().toUpperCase() !== 'RESETEAR' ? 'disabled' : ''} class="flex-1 py-2.5 rounded-xl bg-[#EF4444] disabled:opacity-40 text-sm font-extrabold text-white cursor-pointer">Confirmar Reset</button></div>`}</div></div>`;
     }
 
+    function drawQrToCanvas(canvas, text, size) {
+      if (!canvas) return;
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#FFFDF7';
+      ctx.fillRect(0, 0, size, size);
+      if (typeof window.qrcode === 'function') {
+        const qr = window.qrcode(0, 'M');
+        qr.addData(text);
+        qr.make();
+        const count = qr.getModuleCount();
+        const quiet = 2;
+        const cell = size / (count + quiet * 2);
+        ctx.fillStyle = '#0B1F1A';
+        for (let r = 0; r < count; r++) {
+          for (let c = 0; c < count; c++) {
+            if (qr.isDark(r, c)) {
+              const x = Math.floor((c + quiet) * cell);
+              const y = Math.floor((r + quiet) * cell);
+              const w = Math.ceil((c + quiet + 1) * cell) - x;
+              const h = Math.ceil((r + quiet + 1) * cell) - y;
+              ctx.fillRect(x, y, w, h);
+            }
+          }
+        }
+      } else {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => { ctx.drawImage(img, 0, 0, size, size); };
+        img.src = 'https://api.qrserver.com/v1/create-qr-code/?size=' + size + 'x' + size + '&data=' + encodeURIComponent(text);
+      }
+    }
+
     // =========================================================================
     // 6. RENDER & EVENTOS SUPABASE
     // =========================================================================
@@ -825,7 +859,7 @@
       if (state.route === 'tv') {
         root.innerHTML = renderTvView();
         const qrEl = document.getElementById('tv-qr-canvas');
-        if (qrEl && window.QRCode) window.QRCode.toCanvas(qrEl, getInviteUrl(), { width: 68, margin: 1, color: { dark: '#0B1F1A', light: '#FFFDF7' } });
+        drawQrToCanvas(qrEl, getInviteUrl(), 88);
         document.getElementById('btn-tv-fs')?.addEventListener('click', () => { try { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); } catch {} });
         document.querySelectorAll('[data-tv-vday]').forEach(b => b.onclick = () => { state.tvVoteDay = Number(b.dataset.tvVday); render(); });
         document.getElementById('btn-tv-prev')?.addEventListener('click', () => { state.tvPhotoIdx = (state.tvPhotoIdx - 1 + state.photos.length) % state.photos.length; render(); });
@@ -1025,7 +1059,7 @@
 
       if (state.adminTab === 'tools') {
         const qrEl = document.getElementById('admin-qr-canvas');
-        if (qrEl && window.QRCode) window.QRCode.toCanvas(qrEl, getInviteUrl(), { width: 220, margin: 2, color: { dark: '#0B1F1A', light: '#FFFDF7' } });
+        drawQrToCanvas(qrEl, getInviteUrl(), 260);
         document.getElementById('btn-copy-inv')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(getInviteUrl()); showAdminToast('Enlace copiado.'); } catch {} });
         document.getElementById('btn-dl-qr')?.addEventListener('click', () => {
           if (!qrEl) return;

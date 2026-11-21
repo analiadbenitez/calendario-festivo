@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0B1F1A" />
+  <title>Calendario Festivo · Gerencia de Infraestructura</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230F2922'/%3E%3Crect x='13' y='28' width='38' height='25' rx='5' fill='%23EF4444'/%3E%3Crect x='10' y='21' width='44' height='9' rx='3.5' fill='%23DC2626'/%3E%3Crect x='28' y='21' width='8' height='32' fill='%23F59E0B'/%3E%3Crect x='13' y='37' width='38' height='6' fill='%23F59E0B'/%3E%3C/svg%3E" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.4/build/qrcode.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      color: #FFFDF7;
+      background:
+        radial-gradient(ellipse 80% 45% at 50% -10%, rgba(245, 158, 11, 0.18) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 45% at 12% 28%, rgba(16, 185, 129, 0.14) 0%, transparent 65%),
+        radial-gradient(ellipse 55% 40% at 88% 32%, rgba(239, 68, 68, 0.12) 0%, transparent 60%),
+        linear-gradient(180deg, #091915 0%, #0E251F 50%, #091713 100%);
+      background-attachment: fixed;
+      overflow-x: hidden;
+    }
+    .font-display { font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif; letter-spacing: -0.015em; }
+    @keyframes gold-pulse {
+      0%, 100% { box-shadow: 0 14px 36px -10px rgba(245, 158, 11, 0.38), 0 0 0 1px rgba(253, 230, 138, 0.3); }
+      50% { box-shadow: 0 18px 46px -8px rgba(245, 158, 11, 0.62), 0 0 0 2px rgba(254, 240, 138, 0.55); }
+    }
+    .active-gold-frame {
+      border-radius: 1.5rem;
+      padding: 2.5px;
+      background: linear-gradient(135deg, #FEF08A 0%, #F59E0B 32%, #EF4444 62%, #F59E0B 85%, #FDE68A 100%);
+      animation: gold-pulse 3.2s ease-in-out infinite;
+    }
+    @keyframes snowfall {
+      0% { transform: translate3d(0, -20px, 0); opacity: 0; }
+      10% { opacity: 0.55; }
+      85% { opacity: 0.5; }
+      100% { transform: translate3d(24px, 105vh, 0); opacity: 0; }
+    }
+    .flake {
+      position: fixed;
+      top: -12px;
+      border-radius: 999px;
+      pointer-events: none;
+      z-index: 1;
+      animation: snowfall var(--dur, 16s) linear infinite;
+      animation-delay: var(--del, 0s);
+    }
+    @keyframes gift-float {
+      0%, 100% { transform: translateY(0px) rotate(0deg); }
+      50% { transform: translateY(-5px) rotate(-1.5deg); }
+    }
+    .animate-gift-float { animation: gift-float 3.2s ease-in-out infinite; }
+    .menti-bar { transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1); }
+    #confetti-canvas { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 9999; }
+  </style>
+</head>
+<body>
+  <canvas id="confetti-canvas"></canvas>
+  <div id="snow-layer" aria-hidden="true"></div>
+  <div id="app" class="relative z-10"></div>
+
+  <script>
+    // =========================================================================
+    // 1. CONFIGURACIÓN DE PRODUCCIÓN (Supabase Realtime)
+    // =========================================================================
+    const CONFIG = {
+      brandTitle: 'Gerencia de Infraestructura',
+      qrToken: 'EQUIPO2026',
+      adminPassword: 'INFRA2026',
+      supabaseUrl: 'https://nvihvmzuwsrsqwghehrz.supabase.co',
+      supabaseKey: 'sb_publishable_2lVzirGbRpMsALYbcjKXyQ_6EEH-ell'
+    };
+
+    const SESSION_KEY = 'calendario_festivo_prod_session_v1';
+    const ADMIN_KEY = 'calendario_festivo_prod_admin_v1';
+
+    const TYPE_LABELS = { raffle: 'Sorteo Aleatorio', voting: 'Votación en Vivo', trivia: 'Trivia Express' };
+    const STATUS_LABELS = { locked: 'Bloqueado', active: 'Activo (Hoy)', finished: 'Finalizado' };
+    const TAG_META = {
+      saludo: { emoji: '🎄', label: 'Saludo', cls: 'bg-[#10B981]/20 border-[#10B981]/45 text-[#A7F3D0]' },
+      brindis: { emoji: '🥂', label: 'Brindis', cls: 'bg-[#F59E0B]/20 border-[#F59E0B]/45 text-[#FDE68A]' },
+      gracias: { emoji: '🙌', label: 'Gracias', cls: 'bg-[#EF4444]/20 border-[#EF4444]/45 text-[#FECACA]' },
+      anecdota: { emoji: '😂', label: 'Anécdota', cls: 'bg-amber-400/20 border-amber-300/45 text-amber-100' }
+    };
+
+    const sb = window.supabase.createClient(CONFIG.supabaseUrl, CONFIG.supabaseKey, {
+      realtime: { params: { eventsPerSecond: 15 } }
+    });
+
+    // =========================================================================
+    // 2. ESTADO REACTIVO GLOBAL
+    // =========================================================================
+    const state = {
+      loading: true,
+      error: '',
+      days: [],
+      participants: [],
+      participations: [],
+      messages: [],
+      photos: [],
+      sessionUserId: localStorage.getItem(SESSION_KEY) || null,
+      route: detectRoute(),
+      teamTab: 'calendar',
+      // Onboarding
+      obTab: 'register',
+      obName: '',
+      obPin: '',
+      obError: '',
+      obBusy: false,
+      // Modal
+      openDayModal: null,
+      voteSearch: '',
+      selectedCandidateId: null,
+      isAddingNew: false,
+      newCandidateName: '',
+      selectedTriviaIndex: null,
+      modalError: '',
+      modalBusy: false,
+      expandedCharts: {},
+      // Community
+      msgTag: 'saludo',
+      msgText: '',
+      msgError: '',
+      msgBusy: false,
+      photoPreview: '',
+      photoCaption: '',
+      photoError: '',
+      photoBusy: false,
+      // TV
+      tvPhotoIdx: 0,
+      tvMsgIdx: 0,
+      tvWinnerPage: 0,
+      tvPaused: false,
+      tvVoteDay: null,
+      // Admin
+      adminUnlocked: sessionStorage.getItem(ADMIN_KEY) === 'true',
+      adminPassError: '',
+      adminTab: 'days',
+      adminToast: '',
+      adminEditDay: null,
+      adminDrawDay: null,
+      drawPhase: 'ready',
+      drawCountdown: 3,
+      drawHighlight: '',
+      drawWinner: null,
+      adminVoteDay: 2,
+      adminUserSearch: '',
+      adminShowPins: false,
+      resetStep: 0,
+      resetWord: ''
+    };
+
+    function getBaseUrl() {
+      const basePath = window.location.pathname.replace(/\/(admin|tv)\/?$/, '/') || '/';
+      return `${window.location.origin}${basePath}`;
+    }
+    function getInviteUrl() {
+      return `${getBaseUrl()}?token=${encodeURIComponent(CONFIG.qrToken)}`;
+    }
+    function detectRoute() {
+      const p = window.location.pathname.replace(/\/+$/, '');
+      const h = window.location.hash;
+      if (p.endsWith('/admin') || h.startsWith('#/admin')) return 'admin';
+      if (p.endsWith('/tv') || h.startsWith('#/tv')) return 'tv';
+      return 'home';
+    }
+    function esc(s) {
+      return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+    function normalizeName(raw) {
+      return raw.trim().replace(/\s+/g, ' ').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+    }
+    function formatDisplayName(raw) {
+      const c = new Set(['de', 'del', 'la', 'las', 'los', 'y']);
+      return raw.trim().replace(/\s+/g, ' ').split(' ').map((w, i) => {
+        const l = w.toLowerCase();
+        return i > 0 && c.has(l) ? l : l.charAt(0).toUpperCase() + l.slice(1);
+      }).join(' ');
+    }
+    function isValidFullName(raw) {
+      const cl = raw.trim().replace(/\s+/g, ' ');
+      return cl.split(' ').filter(p => p.length >= 2).length >= 2 && cl.length >= 5;
+    }
+    function getCurrentUser() {
+      if (!state.sessionUserId) return null;
+      const u = state.participants.find(p => p.id === state.sessionUserId) || null;
+      if (!state.loading && !u) {
+        state.sessionUserId = null;
+        localStorage.removeItem(SESSION_KEY);
+      }
+      return u;
+    }
+
+    // =========================================================================
+    // 3. SINCRONIZACIÓN SUPABASE REALTIME
+    // =========================================================================
+    async function loadSnapshot() {
+      try {
+        const [dRes, uRes, pRes, mRes, fRes] = await Promise.all([
+          sb.from('calendar_days').select('*').order('day_number', { ascending: true }),
+          sb.from('participants').select('*').order('full_name', { ascending: true }),
+          sb.from('participations').select('*').order('created_at', { ascending: true }),
+          sb.from('shared_messages').select('*').order('created_at', { ascending: false }),
+          sb.from('shared_photos').select('*').order('created_at', { ascending: false })
+        ]);
+        if (dRes.error) throw dRes.error;
+        if (uRes.error) throw uRes.error;
+        if (pRes.error) throw pRes.error;
+        if (mRes.error) throw mRes.error;
+        if (fRes.error) throw fRes.error;
+
+        state.days = dRes.data.map(r => ({
+          dayNumber: r.day_number, scheduledDate: r.scheduled_date, type: r.type, title: r.title,
+          prompt: r.prompt, status: r.status, triviaOptions: r.trivia_options,
+          triviaCorrectIndex: r.trivia_correct_index, winnerId: r.winner_id,
+          winnerName: r.winner_name, winnerMethod: r.winner_method
+        }));
+        state.participants = uRes.data.map(r => ({
+          id: r.id, fullName: r.full_name, normalizedName: r.normalized_name, pin: r.pin,
+          isRegistered: typeof r.is_registered === 'boolean' ? r.is_registered : r.pin !== null,
+          hasWon: r.has_won, wonDay: r.won_day
+        }));
+        state.participations = pRes.data.map(r => ({
+          id: r.id, userId: r.user_id, dayNumber: r.day_number, type: r.type,
+          votedForUserId: r.voted_for_user_id, triviaOptionIndex: r.trivia_option_index, isCorrect: r.is_correct
+        }));
+        state.messages = mRes.data.map(r => ({
+          id: r.id, userId: r.user_id, authorName: r.author_name, tag: r.tag, content: r.content, createdAt: r.created_at
+        }));
+        state.photos = fRes.data.map(r => ({
+          id: r.id, userId: r.user_id, authorName: r.author_name, imageData: r.image_data, caption: r.caption || '', createdAt: r.created_at
+        }));
+        state.error = '';
+      } catch (err) {
+        state.error = 'Error conectando con Supabase: ' + (err.message || err);
+      } finally {
+        state.loading = false;
+        render();
+      }
+    }
+
+    let rtTimer = null;
+    function scheduleRefresh() {
+      if (rtTimer) clearTimeout(rtTimer);
+      rtTimer = setTimeout(() => { void loadSnapshot(); }, 100);
+    }
+
+    sb.channel('calendario-festivo-live')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'calendar_days' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'participants' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'participations' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shared_messages' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shared_photos' }, scheduleRefresh)
+      .subscribe();
+
+    window.addEventListener('hashchange', () => { state.route = detectRoute(); render(); });
+    window.addEventListener('popstate', () => { state.route = detectRoute(); render(); });
+
+    // =========================================================================
+    // 4. UTILIDADES (CONFETTI, COMPRESIÓN FOTOS, CÁLCULOS, SVG REGALOS)
+    // =========================================================================
+    let confettiParticles = [], confettiRunning = false;
+    function fireConfetti(count = 85) {
+      const canvas = document.getElementById('confetti-canvas');
+      if (!canvas) return;
+      canvas.width = window.innerWidth; canvas.height = window.innerHeight;
+      const colors = ['#F59E0B', '#EF4444', '#10B981', '#FDE68A', '#FFFDF7'];
+      for (let i = 0; i < count; i++) {
+        confettiParticles.push({
+          x: canvas.width * (0.25 + Math.random() * 0.5), y: canvas.height * 0.48,
+          vx: (Math.random() - 0.5) * 14, vy: -6 - Math.random() * 11,
+          w: 6 + Math.random() * 6, h: 4 + Math.random() * 5,
+          color: colors[i % colors.length], rot: Math.random() * 360, vrot: (Math.random() - 0.5) * 12, life: 1
+        });
+      }
+      if (!confettiRunning) { confettiRunning = true; requestAnimationFrame(stepConfetti); }
+    }
+    function stepConfetti() {
+      const canvas = document.getElementById('confetti-canvas');
+      if (!canvas) { confettiRunning = false; return; }
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      confettiParticles.forEach(p => {
+        p.x += p.vx; p.y += p.vy; p.vy += 0.28; p.vx *= 0.99; p.rot += p.vrot; p.life -= 0.012;
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate((p.rot * Math.PI) / 180);
+        ctx.globalAlpha = Math.max(p.life, 0); ctx.fillStyle = p.color;
+        ctx.fillRect(-p.w / 2, -p.h / 2, p.w, p.h); ctx.restore();
+      });
+      confettiParticles = confettiParticles.filter(p => p.life > 0 && p.y < canvas.height + 30);
+      if (confettiParticles.length) requestAnimationFrame(stepConfetti);
+      else { ctx.clearRect(0, 0, canvas.width, canvas.height); confettiRunning = false; }
+    }
+
+    function compressPhotoFile(file) {
+      return new Promise((resolve, reject) => {
+        if (!file.type.startsWith('image/')) { reject(new Error('Elegí una imagen válida.')); return; }
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('No pudimos leer la imagen.'));
+        reader.onload = () => {
+          const img = new Image();
+          img.onerror = () => reject(new Error('Imagen no compatible.'));
+          img.onload = () => {
+            const max = 1200;
+            let w = img.width, h = img.height;
+            if (w > max || h > max) {
+              if (w >= h) { h = Math.round((h * max) / w); w = max; }
+              else { w = Math.round((w * max) / h); h = max; }
+            }
+            const c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            c.getContext('2d').drawImage(img, 0, 0, w, h);
+            resolve(c.toDataURL('image/jpeg', 0.78));
+          };
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function computeVoteTallies(dayNumber) {
+      const votes = state.participations.filter(p => p.dayNumber === dayNumber && p.type === 'voting' && p.votedForUserId);
+      const total = votes.length;
+      if (!total) return { tallies: [], total: 0 };
+      const counts = {};
+      votes.forEach(v => { counts[v.votedForUserId] = (counts[v.votedForUserId] || 0) + 1; });
+      const maxVotes = Math.max(...Object.values(counts));
+      const tallies = Object.entries(counts).map(([cid, cnt]) => {
+        const u = state.participants.find(p => p.id === cid);
+        return {
+          candidateId: cid, candidateName: u ? u.fullName : 'Compañero/a',
+          votes: cnt, percentage: Math.round((cnt / total) * 100), isLeader: cnt === maxVotes && maxVotes > 0
+        };
+      }).sort((a, b) => b.votes - a.votes || a.candidateName.localeCompare(b.candidateName, 'es'));
+      return { tallies, total };
+    }
+
+    function computeDrawPool(day) {
+      const entries = state.participations.filter(p => p.dayNumber === day.dayNumber);
+      if (day.type === 'raffle') {
+        const el = entries.map(e => state.participants.find(p => p.id === e.userId)).filter(u => u && !u.hasWon);
+        return { mode: 'raffle', candidates: el.map(u => ({ id: u.id, fullName: u.fullName })), totalEntries: entries.length };
+      }
+      if (day.type === 'trivia') {
+        const ok = entries.filter(e => e.isCorrect);
+        const el = ok.map(e => state.participants.find(p => p.id === e.userId)).filter(u => u && !u.hasWon);
+        return { mode: 'trivia_raffle', candidates: el.map(u => ({ id: u.id, fullName: u.fullName })), totalEntries: entries.length };
+      }
+      const counts = {};
+      entries.forEach(e => {
+        if (!e.votedForUserId) return;
+        const target = state.participants.find(p => p.id === e.votedForUserId);
+        if (target && !target.hasWon) counts[target.id] = (counts[target.id] || 0) + 1;
+      });
+      const vals = Object.values(counts);
+      const topVotes = vals.length ? Math.max(...vals) : 0;
+      const leaders = Object.entries(counts).filter(([, c]) => c === topVotes && topVotes > 0)
+        .map(([id, votes]) => ({ id, fullName: state.participants.find(p => p.id === id).fullName, votes }))
+        .sort((a, b) => a.fullName.localeCompare(b.fullName, 'es'));
+      return { mode: leaders.length > 1 ? 'voting_tiebreak' : 'voting_clear', candidates: leaders, totalEntries: entries.length, topVotes };
+    }
+
+    const PALETTES = [
+      { box: '#EF4444', dark: '#B91C1C', lid: '#DC2626', rib: '#F59E0B', ribL: '#FDE68A' },
+      { box: '#10B981', dark: '#047857', lid: '#059669', rib: '#F59E0B', ribL: '#FEF08A' },
+      { box: '#D97706', dark: '#92400E', lid: '#F59E0B', rib: '#EF4444', ribL: '#FCA5A5' },
+      { box: '#DC2626', dark: '#991B1B', lid: '#EF4444', rib: '#10B981', ribL: '#6EE7B7' },
+      { box: '#059669', dark: '#065F46', lid: '#10B981', rib: '#EF4444', ribL: '#FECACA' }
+    ];
+    function giftSvg(dayNumber, status, size = 'md') {
+      const p = PALETTES[(dayNumber - 1) % PALETTES.length];
+      const dim = size === 'sm' ? 'w-14 h-14' : size === 'lg' ? 'w-24 h-24' : 'w-20 h-20';
+      const isLocked = status === 'locked', isActive = status === 'active', isFinished = status === 'finished';
+      return `<div class="relative inline-flex items-center justify-center select-none ${dim} ${isActive ? 'animate-gift-float' : ''}">
+        <svg viewBox="0 0 96 96" fill="none" class="relative w-full h-full drop-shadow-md ${isLocked ? 'opacity-75' : ''}">
+          <rect x="20" y="42" width="56" height="40" rx="7" fill="${p.box}"/>
+          <rect x="20" y="42" width="56" height="8" fill="${p.dark}" opacity="0.32"/>
+          <rect x="43" y="42" width="10" height="40" fill="${p.rib}"/>
+          <rect x="20" y="59" width="56" height="8" fill="${p.rib}"/>
+          <g transform="${isFinished ? 'translate(-2 -10) rotate(-10 48 36)' : ''}">
+            <rect x="15" y="30" width="66" height="14" rx="5" fill="${p.lid}"/>
+            <rect x="43" y="30" width="10" height="14" fill="${p.rib}"/>
+            <path d="M48 30C38 30 28 24 31 17.5C34 11 44 18 48 30Z" fill="${p.ribL}"/>
+            <path d="M48 30C58 30 68 24 65 17.5C62 11 52 18 48 30Z" fill="${p.rib}"/>
+            <circle cx="48" cy="29.5" r="4.5" fill="${p.ribL}"/>
+          </g>
+          ${isFinished ? '<path d="M52 20L54.4 25.6L60.5 26.2L55.8 30.1L57.2 36L52 32.8L46.8 36L48.2 30.1L43.5 26.2L49.6 25.6L52 20Z" fill="#FDE68A"/>' : ''}
+          <circle cx="48" cy="63" r="13.5" fill="${isActive ? '#FFFBEB' : '#0B1F1A'}" stroke="#F59E0B" stroke-width="2.5"/>
+          <text x="48" y="68" text-anchor="middle" fill="${isActive ? '#92400E' : '#FDE68A'}" font-size="14.5" font-weight="800" font-family="Georgia,serif">${dayNumber}</text>
+          ${isLocked ? `<g transform="translate(61 56)"><circle cx="14" cy="14" r="13.5" fill="#0B1F1A" stroke="#F59E0B" stroke-width="1.8"/><path d="M10 13V10.5C10 8.3 11.8 6.5 14 6.5C16.2 6.5 18 8.3 18 10.5V13" stroke="#FDE68A" stroke-width="2" stroke-linecap="round"/><rect x="8.5" y="13" width="11" height="8.5" rx="2.2" fill="#F59E0B"/></g>` : ''}
+        </svg>
+      </div>`;
+    }
+
+    function renderMentimeter(dayNumber, isLive, userVotedForId) {
+      const { tallies, total } = computeVoteTallies(dayNumber);
+      const leaderCount = tallies.filter(t => t.isLeader).length;
+      const g = ['linear-gradient(90deg,#F59E0B,#FDE68A)', 'linear-gradient(90deg,#10B981,#6EE7B7)', 'linear-gradient(90deg,#EF4444,#FCA5A5)', 'linear-gradient(90deg,#D97706,#FCD34D)'];
+      return `<div class="rounded-2xl bg-[#091A15]/90 border border-[#F59E0B]/30 p-4 space-y-3 text-left">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <div class="flex items-center gap-2">
+            <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase ${isLive ? 'bg-[#10B981]/20 border border-[#10B981]/45 text-[#6EE7B7]' : 'bg-[#F59E0B]/15 border border-[#F59E0B]/35 text-[#FDE68A]'}">${isLive ? '● Ranking en vivo' : 'Resultados finales'}</span>
+            ${leaderCount > 1 ? '<span class="px-2 py-0.5 rounded-full bg-[#EF4444]/20 border border-[#EF4444]/40 text-[#FECACA] text-[11px] font-bold">Empate en 1° puesto</span>' : ''}
+          </div>
+          <span class="text-xs font-semibold text-[#B9D6C9]">${total} ${total === 1 ? 'voto' : 'votos'}</span>
+        </div>
+        ${tallies.length === 0 ? '<p class="text-center py-4 text-xs text-[#A5C6B7]">Aún no hay votos registrados. ¡Aparecerán aquí al instante!</p>' : `<div class="space-y-2.5">
+          ${tallies.map((t, i) => `<div class="space-y-1">
+            <div class="flex items-center justify-between gap-2 text-xs sm:text-sm">
+              <div class="flex items-center gap-1.5 min-w-0">
+                <span class="font-bold text-[#F59E0B]">${t.isLeader ? '👑' : (i + 1) + '.'}</span>
+                <span class="font-semibold text-white truncate">${esc(t.candidateName)}</span>
+                ${userVotedForId === t.candidateId ? '<span class="px-1.5 py-0.5 rounded bg-[#10B981]/25 text-[10px] font-bold text-[#A7F3D0]">Tu voto</span>' : ''}
+              </div>
+              <div class="shrink-0 flex items-center gap-2"><span class="text-[11px] text-[#A5C6B7]">${t.votes} ${t.votes === 1 ? 'voto' : 'votos'}</span><span class="font-extrabold text-[#FDE68A] w-9 text-right">${t.percentage}%</span></div>
+            </div>
+            <div class="h-3.5 w-full rounded-full bg-white/10 overflow-hidden p-[2px]"><div class="menti-bar h-full rounded-full" style="width:${Math.max(t.percentage, 5)}%;background:${t.isLeader ? g[0] : g[(i % 3) + 1]}"></div></div>
+          </div>`).join('')}
+        </div>`}
+      </div>`;
+    }
+
+    function showAdminToast(msg) {
+      state.adminToast = msg;
+      render();
+      setTimeout(() => { if (state.adminToast === msg) { state.adminToast = ''; render(); } }, 3800);
+    }
+
+    // =========================================================================
+    // 5. VISTAS PRINCIPALES (TV, RESTRICTED, ONBOARDING, TEAM, ADMIN)
+    // =========================================================================
+    function renderTvView() {
+      const winners = state.days.filter(d => d.winnerName).sort((a, b) => b.dayNumber - a.dayNumber);
+      const totalPages = Math.max(1, Math.ceil(winners.length / 4));
+      if (state.tvWinnerPage >= totalPages) state.tvWinnerPage = 0;
+      const visibleWinners = winners.slice(state.tvWinnerPage * 4, state.tvWinnerPage * 4 + 4);
+
+      const votingDays = state.days.filter(d => d.type === 'voting');
+      const featuredVote = votingDays.find(d => d.dayNumber === state.tvVoteDay)
+        || votingDays.find(d => d.status === 'active')
+        || [...votingDays].reverse().find(d => state.participations.some(p => p.dayNumber === d.dayNumber))
+        || votingDays[0];
+      const { tallies, total } = featuredVote ? computeVoteTallies(featuredVote.dayNumber) : { tallies: [], total: 0 };
+      const leaderCount = tallies.filter(t => t.isLeader).length;
+
+      if (state.tvPhotoIdx >= state.photos.length) state.tvPhotoIdx = 0;
+      if (state.tvMsgIdx >= state.messages.length) state.tvMsgIdx = 0;
+      const currentPhoto = state.photos[state.tvPhotoIdx] || null;
+      const currentMsg = state.messages[state.tvMsgIdx] || null;
+      const nextMsgs = state.messages.length > 1
+        ? [1, 2].filter(o => o < state.messages.length).map(o => state.messages[(state.tvMsgIdx + o) % state.messages.length])
+        : [];
+      const clock = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
+      const g = ['linear-gradient(90deg,#F59E0B,#FEF08A)', 'linear-gradient(90deg,#10B981,#6EE7B7)', 'linear-gradient(90deg,#EF4444,#FCA5A5)', 'linear-gradient(90deg,#D97706,#FCD34D)'];
+
+      return `<div class="min-h-dvh lg:h-dvh lg:overflow-hidden flex flex-col p-3 sm:p-4 lg:p-5 gap-3.5">
+        <header class="shrink-0 rounded-2xl bg-[#0D231C]/92 border border-[#F59E0B]/40 px-4 sm:px-5 py-2.5 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+          <div class="flex items-center gap-3">
+            <div class="w-11 h-11 rounded-2xl bg-[#EF4444] border border-[#F59E0B]/70 flex items-center justify-center text-xl">✨</div>
+            <div>
+              <p class="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[#F59E0B]">${CONFIG.brandTitle}</p>
+              <h1 class="font-display text-xl sm:text-2xl font-extrabold text-white leading-tight">Calendario Festivo · Pantalla en Vivo</h1>
+            </div>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="px-3 py-1 rounded-full bg-[#10B981]/20 border border-[#10B981]/50 text-[#6EE7B7] text-xs font-extrabold uppercase">● En Vivo</span>
+            <span class="hidden sm:inline text-lg font-extrabold text-[#FEF3C7] tabular-nums">🕒 ${clock}</span>
+            <div class="hidden md:flex items-center gap-2 rounded-xl bg-[#081712] border border-[#F59E0B]/30 px-2.5 py-1.5">
+              <div class="p-1 rounded-lg bg-[#FFFDF7]"><canvas id="tv-qr-canvas" class="block w-11 h-11"></canvas></div>
+              <div class="text-[11px] leading-tight text-[#CBE3D8] max-w-[125px]"><p class="font-bold text-[#FDE68A]">Escaneá el QR</p><p>Votá, mandá mensajes y subí fotos</p></div>
+            </div>
+            <button id="btn-tv-fs" class="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-xs font-bold text-[#FDE68A] cursor-pointer">⛶</button>
+          </div>
+        </header>
+
+        <main class="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-12 lg:grid-rows-2 gap-3.5">
+          <!-- Ganadores -->
+          <section class="lg:col-span-5 rounded-3xl bg-[#102921]/92 border border-[#F59E0B]/35 p-4 sm:p-5 flex flex-col min-h-[250px] lg:min-h-0 shadow-xl">
+            <div class="flex items-center justify-between mb-3 shrink-0">
+              <h2 class="font-display text-xl sm:text-2xl font-bold text-white">🏆 Ganadores</h2>
+              <span class="px-2.5 py-0.5 rounded-full bg-[#F59E0B]/20 border border-[#F59E0B]/40 text-xs font-extrabold text-[#FDE68A]">${winners.length} / 10</span>
+            </div>
+            ${winners.length === 0 ? '<div class="flex-1 flex items-center justify-center text-center text-sm text-[#B7D5C7]">¡Próximamente los primeros ganadores de regalos sorpresa!</div>' : `<div class="flex-1 space-y-2 overflow-hidden">
+              ${visibleWinners.map(w => `<div class="rounded-2xl bg-gradient-to-r from-[#F59E0B]/18 via-[#0B1F1A]/80 to-[#10B981]/15 border border-[#F59E0B]/35 px-3.5 py-2.5 flex items-center gap-3">
+                <div class="w-10 h-10 rounded-xl bg-[#F59E0B] text-[#0B1F1A] font-display font-extrabold text-sm flex items-center justify-center shrink-0">D${w.dayNumber}</div>
+                <div class="min-w-0 flex-1"><p class="font-display text-base sm:text-lg font-extrabold text-white truncate">${esc(w.winnerName)}</p><p class="text-xs text-[#C7E2D6] truncate">${esc(w.title)} · ${esc(w.scheduledDate)}</p></div>
+                <span class="text-lg">🏅</span>
+              </div>`).join('')}
+            </div>`}
+          </section>
+
+          <!-- Mentimeter en vivo -->
+          <section class="lg:col-span-7 rounded-3xl bg-[#102921]/92 border border-[#F59E0B]/40 p-4 sm:p-5 flex flex-col min-h-[260px] lg:min-h-0 shadow-xl">
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-2 shrink-0">
+              <div>
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="px-2.5 py-0.5 rounded-full bg-[#10B981]/20 border border-[#10B981]/45 text-[#6EE7B7] text-[11px] font-extrabold uppercase">● Mentimeter en Vivo</span>
+                  ${leaderCount > 1 ? '<span class="px-2 py-0.5 rounded-full bg-[#EF4444]/25 border border-[#EF4444]/50 text-[#FECACA] text-[11px] font-bold">⚖️ Empate en la punta</span>' : ''}
+                </div>
+                <h2 class="font-display text-xl sm:text-2xl font-bold text-white mt-1">${featuredVote ? `Día ${featuredVote.dayNumber}: ${esc(featuredVote.title)}` : 'Votaciones'}</h2>
+              </div>
+              <div class="flex items-center gap-1.5 flex-wrap">
+                <span class="text-xs font-extrabold text-[#FDE68A] mr-1">${total} ${total === 1 ? 'voto' : 'votos'}</span>
+                ${votingDays.map(vd => `<button data-tv-vday="${vd.dayNumber}" class="px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${featuredVote?.dayNumber === vd.dayNumber ? 'bg-[#F59E0B] text-[#0B1F1A]' : 'bg-white/10 text-[#CBE3D8]'}">D${vd.dayNumber}</button>`).join('')}
+              </div>
+            </div>
+            ${featuredVote ? `<p class="text-xs sm:text-sm text-[#C7E2D6] mb-3 shrink-0">${esc(featuredVote.prompt)}</p>` : ''}
+            <div class="flex-1 flex flex-col justify-center space-y-2.5 overflow-hidden">
+              ${tallies.length === 0 ? '<p class="text-center text-sm text-[#B7D5C7] py-6">Escaneá el QR y emití tu voto para ver el gráfico moverse en tiempo real.</p>' : tallies.slice(0, 6).map((t, i) => `<div class="space-y-1">
+                <div class="flex items-center justify-between text-sm sm:text-base"><span class="font-bold text-white truncate">${t.isLeader ? '👑 ' : (i + 1) + '. '}${esc(t.candidateName)}</span><span class="shrink-0 tabular-nums"><span class="text-xs text-[#B3D2C4] mr-2">${t.votes} ${t.votes === 1 ? 'voto' : 'votos'}</span><strong class="text-[#FDE68A]">${t.percentage}%</strong></span></div>
+                <div class="h-4 w-full rounded-full bg-white/10 overflow-hidden p-[2px]"><div class="menti-bar h-full rounded-full" style="width:${Math.max(t.percentage, 5)}%;background:${t.isLeader ? g[0] : g[(i % 3) + 1]}"></div></div>
+              </div>`).join('')}
+            </div>
+          </section>
+
+          <!-- Mensajes rotativos -->
+          <section class="lg:col-span-5 rounded-3xl bg-[#102921]/92 border border-white/15 p-4 sm:p-5 flex flex-col min-h-[250px] lg:min-h-0 shadow-xl">
+            <div class="flex items-center justify-between mb-3 shrink-0">
+              <h2 class="font-display text-xl sm:text-2xl font-bold text-white">💬 Mensajes del Equipo</h2>
+              <span class="text-xs font-bold text-[#B8D5C7]">${state.messages.length} mensajes</span>
+            </div>
+            ${!currentMsg ? '<div class="flex-1 flex items-center justify-center text-center text-sm text-[#B7D5C7]">Escaneá el QR y dejá tu saludo en "Mensajes" para verlo acá en vivo.</div>' : `<div class="flex-1 min-h-0 flex flex-col justify-between gap-2.5 overflow-hidden">
+              <div class="rounded-2xl bg-gradient-to-br from-[#173A2E] to-[#0D211B] border border-[#F59E0B]/40 p-4 flex-1 flex flex-col justify-between gap-2 min-h-0">
+                <div class="flex items-center justify-between"><span class="px-2.5 py-0.5 rounded-full border text-xs font-bold ${(TAG_META[currentMsg.tag] || TAG_META.saludo).cls}">${(TAG_META[currentMsg.tag] || TAG_META.saludo).emoji} ${(TAG_META[currentMsg.tag] || TAG_META.saludo).label}</span><span class="text-xs font-bold text-[#9DC1B2]">${state.tvMsgIdx + 1} / ${state.messages.length}</span></div>
+                <p class="font-display text-lg sm:text-xl font-bold text-white leading-snug">“${esc(currentMsg.content)}”</p>
+                <p class="text-sm font-extrabold text-[#FDE68A]">— ${esc(currentMsg.authorName)}</p>
+              </div>
+              ${nextMsgs.length ? `<div class="space-y-1.5 shrink-0">${nextMsgs.map(m => `<div class="rounded-xl bg-[#091A15]/80 border border-white/10 px-3 py-1.5 flex items-center justify-between gap-2 text-xs"><span class="text-[#D8ECE3] truncate">${(TAG_META[m.tag] || TAG_META.saludo).emoji} “${esc(m.content)}”</span><span class="text-[#FCD34D] font-bold shrink-0">${esc(m.authorName)}</span></div>`).join('')}</div>` : ''}
+            </div>`}
+          </section>
+
+          <!-- Carrusel de Fotos -->
+          <section class="lg:col-span-7 rounded-3xl bg-[#0A1A15]/95 border border-[#F59E0B]/35 overflow-hidden relative flex flex-col min-h-[280px] lg:min-h-0 shadow-xl">
+            <div class="absolute top-3 left-3 right-3 z-20 flex items-center justify-between gap-2">
+              <span class="px-3 py-1 rounded-full bg-black/70 border border-white/15 text-xs font-bold text-white">📸 Fotos del Equipo ${state.photos.length ? `(${state.tvPhotoIdx + 1}/${state.photos.length})` : ''}</span>
+              ${state.photos.length > 1 ? `<div class="flex items-center gap-1"><button id="btn-tv-prev" class="w-8 h-8 rounded-full bg-black/70 text-white cursor-pointer">‹</button><button id="btn-tv-pause" class="w-8 h-8 rounded-full bg-black/70 text-white text-xs cursor-pointer">${state.tvPaused ? '▶' : '⏸'}</button><button id="btn-tv-next" class="w-8 h-8 rounded-full bg-black/70 text-white cursor-pointer">›</button></div>` : ''}
+            </div>
+            ${!currentPhoto ? '<div class="flex-1 flex items-center justify-center text-center p-8 text-sm text-[#B7D5C7]">Escaneá el QR y subí fotos desde tu celular para verlas rotar automáticamente acá.</div>' : `<div class="relative flex-1 bg-black flex items-center justify-center h-full">
+              <img src="${currentPhoto.imageData}" alt="" class="absolute inset-0 w-full h-full object-cover blur-2xl opacity-35 scale-110"/>
+              <img src="${currentPhoto.imageData}" alt="${esc(currentPhoto.caption || currentPhoto.authorName)}" class="relative z-10 w-full h-full object-contain max-h-[380px] lg:max-h-full"/>
+              <div class="absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-black/85 via-black/45 to-transparent px-5 pt-8 pb-3.5 flex items-end justify-between gap-3">
+                <div class="min-w-0">${currentPhoto.caption ? `<p class="font-display text-base sm:text-xl font-bold text-white truncate">${esc(currentPhoto.caption)}</p>` : ''}<p class="text-xs sm:text-sm font-semibold text-[#FDE68A]">📸 Compartida por ${esc(currentPhoto.authorName)}</p></div>
+                <div class="flex gap-1.5 shrink-0 pb-1">${state.photos.slice(0, 10).map((_, idx) => `<span class="h-1.5 rounded-full ${idx === state.tvPhotoIdx ? 'w-5 bg-[#F59E0B]' : 'w-1.5 bg-white/40'}"></span>`).join('')}</div>
+              </div>
+            </div>`}
+          </section>
+        </main>
+      </div>`;
+    }
+
+    function renderRestricted(invalid) {
+      return `<div class="min-h-dvh flex items-center justify-center px-5 py-10">
+        <div class="w-full max-w-md rounded-3xl bg-[#112A23]/90 border border-[#F59E0B]/35 shadow-2xl p-8 text-center space-y-5">
+          <div class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-[#F59E0B]/15 border border-[#F59E0B]/35 text-[#FDE68A] text-xs font-bold uppercase tracking-wider">✨ ${CONFIG.brandTitle}</div>
+          <div class="mx-auto w-24 h-24 rounded-2xl bg-[#091A15] border border-[#F59E0B]/40 flex items-center justify-center text-4xl relative">📱<span class="absolute -bottom-2 -right-2 w-9 h-9 rounded-full bg-[#EF4444] border-2 border-[#112A23] flex items-center justify-center text-sm">🔒</span></div>
+          <h1 class="font-display text-3xl font-bold text-white">Acceso Restringido</h1>
+          <p class="text-sm sm:text-base text-[#D6E8DF] leading-relaxed">Escaneá el <strong class="text-[#FDE68A]">código QR oficial</strong> para participar del Calendario Festivo de 10 días con regalos sorpresa.</p>
+          ${invalid ? '<div class="rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/40 px-4 py-3 text-sm text-[#FECACA]">El código de invitación en el enlace no es válido.</div>' : ''}
+        </div>
+      </div>`;
+    }
+
+    function renderOnboarding() {
+      const preview = state.obName.trim().length >= 3 ? formatDisplayName(state.obName) : '';
+      return `<div class="min-h-dvh flex items-center justify-center px-4 py-8">
+        <div class="w-full max-w-md space-y-5">
+          <div class="text-center space-y-2">
+            <div class="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-[#F59E0B]/15 border border-[#F59E0B]/35 text-[#FDE68A] text-xs font-bold uppercase">✨ ${CONFIG.brandTitle}</div>
+            <div class="flex justify-center">${giftSvg(10, 'active', 'lg')}</div>
+            <h1 class="font-display text-3xl font-bold text-white">Calendario Festivo</h1>
+            <p class="text-sm text-[#CBE3D8]">10 días de sorteos, votaciones, trivias, mensajes y fotos con <strong class="text-[#FDE68A]">regalos sorpresa</strong>.</p>
+          </div>
+          <div class="rounded-3xl bg-[#112B23]/95 border border-[#F59E0B]/35 shadow-2xl p-6 space-y-5">
+            <div class="grid grid-cols-2 gap-1.5 p-1 rounded-2xl bg-[#091915] border border-white/10">
+              <button id="ob-tab-reg" class="py-2.5 rounded-xl text-xs sm:text-sm font-bold cursor-pointer ${state.obTab === 'register' ? 'bg-[#EF4444] text-white' : 'text-[#B5D2C5]'}">Primera vez</button>
+              <button id="ob-tab-rec" class="py-2.5 rounded-xl text-xs sm:text-sm font-bold cursor-pointer ${state.obTab === 'recover' ? 'bg-[#10B981] text-[#062016]' : 'text-[#B5D2C5]'}">Ya me registré</button>
+            </div>
+            <form id="onboarding-form" class="space-y-4">
+              <div>
+                <label class="block text-sm font-semibold text-[#FFFBEB] mb-1">Nombre y Apellido</label>
+                <input id="ob-name" type="text" value="${esc(state.obName)}" placeholder="Ej. Martín López" required class="w-full rounded-xl bg-[#091A15] border border-white/15 focus:border-[#F59E0B] px-4 py-3 text-white outline-none"/>
+                ${preview ? `<p class="mt-1 text-xs text-[#A7F3D0]">Se guardará como: <strong>${esc(preview)}</strong></p>` : ''}
+              </div>
+              <div>
+                <label class="block text-sm font-semibold text-[#FFFBEB] mb-1">${state.obTab === 'register' ? 'Creá un PIN numérico de 4 dígitos' : 'Tu PIN de 4 dígitos'}</label>
+                <input id="ob-pin" type="password" inputmode="numeric" maxlength="4" value="${esc(state.obPin)}" placeholder="••••" required class="w-full rounded-xl bg-[#091A15] border border-white/15 focus:border-[#F59E0B] px-4 py-3 text-center text-2xl tracking-[0.55em] font-bold text-[#FDE68A] outline-none"/>
+              </div>
+              ${state.obError ? `<div class="rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/45 px-4 py-2.5 text-xs text-[#FECACA]">${esc(state.obError)}</div>` : ''}
+              <button type="submit" ${state.obBusy ? 'disabled' : ''} class="w-full py-3.5 rounded-xl font-extrabold text-sm sm:text-base text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] disabled:opacity-60 cursor-pointer shadow-lg">
+                ${state.obBusy ? 'Ingresando...' : (state.obTab === 'register' ? '¡Sumarme al Calendario Festivo!' : 'Recuperar mi sesión')}
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function renderTeamBoard(user) {
+      const firstName = user.fullName.split(' ')[0];
+      const finishedCount = state.days.filter(d => d.status === 'finished').length;
+      const activeCount = state.days.filter(d => d.status === 'active').length;
+
+      const cardsHtml = state.days.map(day => {
+        const myPart = state.participations.find(p => p.userId === user.id && p.dayNumber === day.dayNumber);
+        const dayCount = state.participations.filter(p => p.dayNumber === day.dayNumber).length;
+        if (day.status === 'locked') {
+          return `<article class="rounded-3xl bg-[#10251F]/70 border border-white/10 p-5 flex flex-col items-center text-center justify-between min-h-[235px]">
+            <div class="w-full flex items-center justify-between text-xs"><span class="px-2.5 py-1 rounded-full bg-white/10 text-[#C5DDD2] font-semibold">📅 ${esc(day.scheduledDate)}</span><span class="text-[#A4C3B5] font-medium">🔒 Día ${day.dayNumber}</span></div>
+            <div class="my-2">${giftSvg(day.dayNumber, 'locked', 'md')}</div>
+            <div class="space-y-1.5"><p class="font-display text-base font-bold text-[#E5F2EC]">Regalo Sorpresa #${day.dayNumber}</p><span class="inline-block px-3 py-1 rounded-full bg-white/8 border border-white/10 text-xs font-semibold text-[#B4D0C3]">Próximamente</span></div>
+          </article>`;
+        }
+        if (day.status === 'active') {
+          const actionText = day.type === 'raffle' ? 'Participar del Sorteo' : day.type === 'voting' ? 'Emitir mi Voto' : 'Responder Trivia';
+          const excludedPrior = user.hasWon && (day.type === 'raffle' || day.type === 'trivia');
+          return `<article class="active-gold-frame sm:col-span-2">
+            <div class="rounded-[21.5px] bg-gradient-to-br from-[#143329] via-[#102921] to-[#17281F] p-5 sm:p-6 h-full flex flex-col justify-between gap-4">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2"><span class="px-3 py-1 rounded-full bg-[#F59E0B] text-[#0B1F1A] text-xs font-extrabold uppercase">✨ Hoy · Día ${day.dayNumber}</span><span class="px-2.5 py-1 rounded-full bg-white/10 text-[#FEF3C7] text-xs font-semibold">${esc(day.scheduledDate)}</span></div>
+                <span class="px-3 py-1 rounded-full bg-[#EF4444]/20 border border-[#EF4444]/40 text-[#FECACA] text-xs font-bold">${TYPE_LABELS[day.type]}</span>
+              </div>
+              <div class="flex flex-col sm:flex-row items-center sm:items-start gap-4 text-center sm:text-left">
+                <div class="shrink-0">${giftSvg(day.dayNumber, 'active', 'lg')}</div>
+                <div class="flex-1 space-y-1.5"><h2 class="font-display text-2xl sm:text-3xl font-bold text-white leading-tight">${esc(day.title)}</h2><p class="text-sm sm:text-base text-[#D7EBE2]">${esc(day.prompt)}</p><p class="text-xs font-semibold text-[#FCD34D]">${dayCount} ${dayCount === 1 ? 'compañero participó hoy' : 'compañeros participaron hoy'}</p></div>
+              </div>
+              <div class="space-y-3">
+                ${myPart ? `<div class="w-full py-3 px-4 rounded-xl bg-[#10B981]/20 border border-[#10B981]/50 text-[#A7F3D0] font-bold text-sm text-center">✅ ¡Ya participaste hoy!</div>
+                  ${day.type === 'trivia' ? `<div class="rounded-xl px-4 py-2.5 text-xs sm:text-sm font-medium border ${myPart.isCorrect ? 'bg-[#10B981]/15 border-[#10B981]/40 text-[#D1FAE5]' : 'bg-[#F59E0B]/12 border-[#F59E0B]/35 text-[#FEF3C7]'}">${myPart.isCorrect ? '🎉 ¡Respuesta correcta! Entrás al sorteo entre acertantes.' : '¡Gracias por jugar! Mañana tenés otra oportunidad.'}</div>` : ''}`
+                  : excludedPrior ? `<div class="rounded-2xl bg-[#F59E0B]/15 border border-[#F59E0B]/40 p-4 text-xs sm:text-sm text-[#FEF3C7]">🏆 <strong>¡Ya ganaste un regalo sorpresa en el Día ${user.wonDay}!</strong> Cedés tu lugar en este sorteo para que ganen 10 compañeros distintos.</div>`
+                  : `<button data-open-day="${day.dayNumber}" class="w-full py-3.5 px-6 rounded-xl font-extrabold text-base text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] hover:brightness-105 transition shadow-lg cursor-pointer">✨ ${actionText}</button>`}
+                ${day.type === 'voting' ? renderMentimeter(day.dayNumber, true, myPart?.votedForUserId || null) : ''}
+              </div>
+            </div>
+          </article>`;
+        }
+        const showChart = Boolean(state.expandedCharts[day.dayNumber]);
+        return `<article class="rounded-3xl p-5 flex flex-col justify-between gap-4 border bg-[#102A22]/85 border-[#10B981]/35">
+          <div class="flex items-center justify-between text-xs"><span class="px-2.5 py-1 rounded-full bg-[#10B981]/20 border border-[#10B981]/35 text-[#A7F3D0] font-bold">✅ Día ${day.dayNumber} · ${esc(day.scheduledDate)}</span><span class="text-[#B7D4C7]">${TYPE_LABELS[day.type]}</span></div>
+          <div class="flex items-center gap-3">${giftSvg(day.dayNumber, 'finished', 'sm')}<div class="min-w-0"><h3 class="font-display text-lg font-bold text-white leading-snug">${esc(day.title)}</h3><p class="text-xs text-[#C1DBD0] mt-0.5">${esc(day.prompt)}</p></div></div>
+          <div class="rounded-2xl bg-gradient-to-r from-[#F59E0B]/20 to-[#10B981]/15 border border-[#F59E0B]/45 px-4 py-3 flex items-center gap-3"><div class="w-10 h-10 rounded-full bg-[#F59E0B] text-[#0B1F1A] flex items-center justify-center text-lg shrink-0">🏅</div><div class="min-w-0"><p class="text-[11px] font-bold uppercase text-[#FCD34D]">${day.winnerMethod === 'voting_tiebreak' ? 'Ganador/a (Desempate)' : 'Ganador/a del Regalo'}</p><p class="font-display text-base font-bold text-white truncate">${esc(day.winnerName || 'Pendiente')}</p></div></div>
+          ${day.type === 'voting' ? `<div class="space-y-2"><button data-toggle-chart="${day.dayNumber}" class="w-full py-2 rounded-xl bg-white/10 hover:bg-white/15 text-xs font-semibold text-[#D6EAE1] cursor-pointer">📊 ${showChart ? 'Ocultar gráfico' : 'Ver gráfico de votación'}</button>${showChart ? renderMentimeter(day.dayNumber, false, myPart?.votedForUserId) : ''}</div>` : ''}
+        </article>`;
+      }).join('');
+
+      const messagesSection = `<section class="space-y-6">
+        <div class="rounded-3xl bg-[#112B23]/90 border border-[#F59E0B]/30 p-5 sm:p-6 space-y-4 shadow-xl">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div><h2 class="font-display text-2xl font-bold text-white">💬 Muro de Mensajes del Equipo</h2><p class="text-xs sm:text-sm text-[#BED9CC]">Dejá un saludo, brindis, agradecimiento o anécdota. ¡Se proyecta en vivo en la TV!</p></div>
+            <span class="px-3 py-1 rounded-full bg-[#10B981]/15 border border-[#10B981]/35 text-[#A7F3D0] text-xs font-bold">📺 Sale en la TV en vivo</span>
+          </div>
+          <form id="msg-form" class="space-y-3">
+            <div class="flex flex-wrap gap-2">${Object.entries(TAG_META).map(([k, v]) => `<button type="button" data-msg-tag="${k}" class="px-3 py-1.5 rounded-xl text-xs font-bold border cursor-pointer ${state.msgTag === k ? 'bg-[#F59E0B] border-[#FDE68A] text-[#0B1F1A]' : 'bg-[#091A15] border-white/15 text-[#D5E9E0]'}">${v.emoji} ${v.label}</button>`).join('')}</div>
+            <textarea id="msg-input" rows="3" maxlength="240" placeholder="Escribí tu mensaje para el equipo..." class="w-full rounded-2xl bg-[#091A15] border border-white/15 focus:border-[#F59E0B] px-4 py-3 text-sm text-white outline-none resize-none">${esc(state.msgText)}</textarea>
+            ${state.msgError ? `<div class="rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/40 px-4 py-2 text-xs text-[#FECACA]">${esc(state.msgError)}</div>` : ''}
+            <button type="submit" ${state.msgBusy ? 'disabled' : ''} class="px-6 py-3 rounded-xl font-extrabold text-sm text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] disabled:opacity-50 cursor-pointer">${state.msgBusy ? 'Publicando...' : '✉️ Compartir Mensaje'}</button>
+          </form>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          ${state.messages.map(m => { const info = TAG_META[m.tag] || TAG_META.saludo; return `<article class="rounded-2xl bg-[#102921]/90 border border-white/12 p-4 flex flex-col justify-between gap-3"><div class="space-y-2"><span class="inline-block px-2.5 py-0.5 rounded-full border text-[11px] font-bold ${info.cls}">${info.emoji} ${info.label}</span><p class="text-sm sm:text-base text-white leading-relaxed">“${esc(m.content)}”</p></div><div class="pt-2 border-t border-white/10 flex items-center justify-between text-xs"><span class="font-bold text-[#FDE68A]">— ${esc(m.authorName)}</span>${m.userId === user.id ? `<button data-del-msg="${m.id}" class="text-[#FCA5A5] hover:underline cursor-pointer">Eliminar</button>` : ''}</div></article>`; }).join('') || '<p class="text-sm text-[#B7D5C7]">¡Sé el primero en dejar un mensaje en el muro!</p>'}
+        </div>
+      </section>`;
+
+      const photosSection = `<section class="space-y-6">
+        <div class="rounded-3xl bg-[#112B23]/90 border border-[#F59E0B]/30 p-5 sm:p-6 space-y-4 shadow-xl">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div><h2 class="font-display text-2xl font-bold text-white">📸 Álbum de Fotos del Equipo</h2><p class="text-xs sm:text-sm text-[#BED9CC]">Subí fotos desde tu celular para el carrusel automático de la TV.</p></div>
+            <span class="px-3 py-1 rounded-full bg-[#10B981]/15 border border-[#10B981]/35 text-[#A7F3D0] text-xs font-bold">📺 Carrusel TV en vivo</span>
+          </div>
+          <form id="photo-form" class="space-y-3">
+            <input id="photo-file-input" type="file" accept="image/*" class="hidden"/>
+            ${!state.photoPreview ? `<button type="button" id="btn-pick-photo" class="w-full rounded-2xl border-2 border-dashed border-[#F59E0B]/40 hover:border-[#F59E0B] bg-[#091A15]/75 py-8 px-4 text-center space-y-1 cursor-pointer"><div class="text-3xl">📷</div><p class="font-bold text-sm text-white">Tocá para elegir o sacar una foto</p><p class="text-xs text-[#A5C6B7]">Se comprime automáticamente para verse nítida en la pantalla</p></button>` : `<div class="space-y-3"><div class="relative rounded-2xl overflow-hidden bg-black/50 border border-[#F59E0B]/40 max-h-64 flex items-center justify-center"><img src="${state.photoPreview}" alt="Vista previa" class="max-h-64 object-contain"/><button type="button" id="btn-clear-photo" class="absolute top-2 right-2 w-8 h-8 rounded-full bg-black/75 text-white cursor-pointer">✕</button></div><input id="photo-caption-input" type="text" maxlength="140" value="${esc(state.photoCaption)}" placeholder="Epígrafe opcional (ej. ¡Brindis de viernes!)" class="w-full rounded-xl bg-[#091A15] border border-white/15 px-4 py-2.5 text-sm text-white outline-none"/><button type="submit" ${state.photoBusy ? 'disabled' : ''} class="px-6 py-3 rounded-xl font-extrabold text-sm text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] disabled:opacity-50 cursor-pointer">${state.photoBusy ? 'Subiendo...' : '📸 Compartir Foto en la TV'}</button></div>`}
+            ${state.photoError ? `<div class="rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/40 px-4 py-2 text-xs text-[#FECACA]">${esc(state.photoError)}</div>` : ''}
+          </form>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          ${state.photos.map(p => `<article class="rounded-2xl overflow-hidden bg-[#102921]/90 border border-white/12 flex flex-col"><div class="aspect-[4/3] bg-black overflow-hidden"><img src="${p.imageData}" alt="${esc(p.caption || p.authorName)}" class="w-full h-full object-cover" loading="lazy"/></div><div class="p-3.5 flex items-start justify-between gap-2"><div class="min-w-0">${p.caption ? `<p class="text-sm font-semibold text-white">${esc(p.caption)}</p>` : ''}<p class="text-xs text-[#FDE68A] mt-0.5">Por ${esc(p.authorName)}</p></div>${p.userId === user.id ? `<button data-del-photo="${p.id}" class="text-xs text-[#FCA5A5] hover:underline cursor-pointer shrink-0">Eliminar</button>` : ''}</div></article>`).join('') || '<p class="text-sm text-[#B7D5C7]">¡Subí la primera foto del equipo!</p>'}
+        </div>
+      </section>`;
+
+      return `<div class="min-h-dvh flex flex-col">
+        <header class="sticky top-0 z-30 bg-[#0B1F1A]/90 backdrop-blur-md border-b border-[#F59E0B]/20 px-4 py-3.5 space-y-3">
+          <div class="max-w-5xl mx-auto flex items-center justify-between gap-3">
+            <div class="flex items-center gap-2.5"><div class="w-9 h-9 rounded-xl bg-[#EF4444] border border-[#F59E0B]/60 flex items-center justify-center text-lg">🎁</div><div><p class="text-[11px] font-extrabold uppercase tracking-wider text-[#F59E0B]">${CONFIG.brandTitle}</p><p class="font-display text-base font-bold text-white leading-tight">Calendario Festivo</p></div></div>
+            <div class="flex items-center gap-2"><span class="px-3 py-1 rounded-full bg-white/10 text-xs font-semibold text-[#E2F1EA]">${esc(firstName)}</span><button id="btn-logout" class="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-xs text-[#CBE3D8] cursor-pointer">Salir</button></div>
+          </div>
+          <nav class="max-w-xl mx-auto grid grid-cols-3 gap-2">
+            <button data-team-tab="calendar" class="py-2 px-3 rounded-xl text-xs sm:text-sm font-bold cursor-pointer ${state.teamTab === 'calendar' ? 'bg-[#F59E0B] text-[#0B1F1A]' : 'bg-white/8 text-[#CBE3D8]'}">🎁 Calendario</button>
+            <button data-team-tab="messages" class="py-2 px-3 rounded-xl text-xs sm:text-sm font-bold cursor-pointer ${state.teamTab === 'messages' ? 'bg-[#F59E0B] text-[#0B1F1A]' : 'bg-white/8 text-[#CBE3D8]'}">💬 Mensajes (${state.messages.length})</button>
+            <button data-team-tab="photos" class="py-2 px-3 rounded-xl text-xs sm:text-sm font-bold cursor-pointer ${state.teamTab === 'photos' ? 'bg-[#F59E0B] text-[#0B1F1A]' : 'bg-white/8 text-[#CBE3D8]'}">📸 Fotos (${state.photos.length})</button>
+          </nav>
+        </header>
+        <main class="flex-1 max-w-5xl w-full mx-auto px-4 py-6 space-y-6">
+          ${state.error ? `<div class="rounded-2xl bg-[#EF4444]/15 border border-[#EF4444]/40 p-4 text-center text-sm text-[#FECACA]">${esc(state.error)}</div>` : ''}
+          ${state.teamTab === 'calendar' ? `<section class="text-center max-w-2xl mx-auto space-y-2.5"><h1 class="font-display text-3xl sm:text-4xl font-extrabold text-white">¡Felices Fiestas, <span class="text-[#FDE68A]">${esc(firstName)}</span>!</h1><p class="text-sm sm:text-base text-[#CBE3D8]">10 días de sorteos, votaciones en vivo y trivias con <strong class="text-[#FFFBEB]">regalos sorpresa</strong>.</p><div class="pt-1 flex flex-wrap justify-center gap-2 text-xs font-bold"><span class="px-3.5 py-1 rounded-full bg-[#10B981]/20 border border-[#10B981]/40 text-[#A7F3D0]">✨ ${activeCount} ${activeCount === 1 ? 'día activo hoy' : 'días activos hoy'}</span><span class="px-3.5 py-1 rounded-full bg-[#F59E0B]/15 border border-[#F59E0B]/35 text-[#FDE68A]">🏆 ${finishedCount} / 10 regalos entregados</span></div></section><section class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">${cardsHtml}</section>` : state.teamTab === 'messages' ? messagesSection : photosSection}
+        </main>
+        <footer class="border-t border-white/10 py-5 px-4 text-center text-xs text-[#98BAAB]"><p class="font-semibold text-[#CBE3D8]">${CONFIG.brandTitle} · Calendario Festivo de Diciembre</p></footer>
+        ${state.openDayModal ? renderDayModal(user) : ''}
+      </div>`;
+    }
+
+    function renderDayModal(user) {
+      const day = state.days.find(d => d.dayNumber === state.openDayModal);
+      if (!day) return '';
+      const myPart = state.participations.find(p => p.userId === user.id && p.dayNumber === day.dayNumber);
+      const eligible = state.participants.filter(p => p.id !== user.id && !p.hasWon)
+        .filter(p => !state.voteSearch.trim() || p.fullName.toLowerCase().includes(state.voteSearch.trim().toLowerCase()));
+
+      let body = '';
+      if (myPart) {
+        body = `<div class="rounded-2xl bg-[#10B981]/20 border border-[#10B981]/50 p-4 text-sm text-[#D1FAE5] space-y-1"><p class="font-bold text-white text-base">✅ ¡Ya participaste hoy!</p><p>${day.type === 'raffle' ? 'Tu nombre ya está en la ruleta de hoy.' : day.type === 'voting' ? 'Tu voto quedó guardado. Mirá el ranking en vivo:' : (myPart.isCorrect ? '🎉 ¡Acertaste! Entrás al sorteo entre acertantes.' : '¡Gracias por jugar!')}</p></div>${day.type === 'voting' ? renderMentimeter(day.dayNumber, true, myPart.votedForUserId) : ''}<button id="btn-close-modal" class="w-full py-3 rounded-xl bg-white/10 font-bold text-sm text-white cursor-pointer">Volver al Calendario</button>`;
+      } else if (day.type === 'raffle') {
+        body = `<div class="rounded-2xl bg-[#F59E0B]/10 border border-[#F59E0B]/30 p-4 text-xs sm:text-sm text-[#FEF3C7]">🎲 Al confirmar, sumás a <strong>${esc(user.fullName)}</strong> a la ruleta del Día ${day.dayNumber}.</div>${state.modalError ? `<div class="rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/40 px-4 py-2 text-xs text-[#FECACA]">${esc(state.modalError)}</div>` : ''}<button id="btn-submit-raffle" ${state.modalBusy ? 'disabled' : ''} class="w-full py-3.5 rounded-xl font-extrabold text-base text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] cursor-pointer">${state.modalBusy ? 'Registrando...' : '✨ ¡Confirmar mi lugar en el sorteo!'}</button>`;
+      } else if (day.type === 'voting') {
+        const formattedNew = state.newCandidateName.trim().length >= 3 ? formatDisplayName(state.newCandidateName) : '';
+        const isSelfNew = state.newCandidateName.trim().length >= 3 && normalizeName(state.newCandidateName) === user.normalizedName;
+        const canSubmit = state.isAddingNew ? (isValidFullName(state.newCandidateName) && !isSelfNew) : Boolean(state.selectedCandidateId);
+        body = `<div class="text-xs text-[#A7D8C5] bg-[#091A15]/70 border border-white/10 rounded-xl px-3.5 py-2.5">🛡️ Elegí un compañero o agregalo si aún no se registró (regla anti-autovoto activa; ganadores previos excluidos).</div>
+          ${!state.isAddingNew ? `<input id="vote-search-input" type="search" value="${esc(state.voteSearch)}" placeholder="Buscar compañero..." class="w-full rounded-xl bg-[#091A15] border border-white/15 focus:border-[#F59E0B] px-4 py-2.5 text-sm text-white outline-none"/>
+            <div class="max-h-48 overflow-y-auto space-y-2">${eligible.length === 0 ? `<div class="rounded-xl bg-[#091A15]/70 border border-white/10 p-4 text-center space-y-2"><p class="text-xs text-[#A9C9BA]">${state.voteSearch.trim() ? `No encontramos a "${esc(state.voteSearch.trim())}".` : 'Sin otros compañeros aún.'}</p><button id="btn-add-from-search" class="px-3 py-1.5 rounded-lg bg-[#10B981]/20 border border-[#10B981]/45 text-xs font-bold text-[#A7F3D0] cursor-pointer">➕ ${state.voteSearch.trim() ? `Agregar a "${esc(formatDisplayName(state.voteSearch))}"` : 'Agregar compañero nuevo'}</button></div>` : eligible.map(c => `<button data-pick-cand="${c.id}" class="w-full flex items-center justify-between px-4 py-2.5 rounded-xl border text-left text-sm font-semibold cursor-pointer ${state.selectedCandidateId === c.id ? 'bg-[#F59E0B]/20 border-[#F59E0B] text-white' : 'bg-[#091A15]/80 border-white/10 text-[#D8ECE3]'}"><span>${esc(c.fullName)} ${!c.isRegistered ? '<span class="ml-1 px-1.5 py-0.5 rounded bg-white/10 text-[10px]">Nominado</span>' : ''}</span>${state.selectedCandidateId === c.id ? '<span>✓</span>' : ''}</button>`).join('')}</div>
+            <button id="btn-toggle-add-cand" class="w-full py-2.5 px-3 rounded-xl bg-white/8 hover:bg-white/12 border border-dashed border-[#F59E0B]/40 text-xs font-bold text-[#FDE68A] cursor-pointer">➕ ¿Aún no se registró? Agregá a un compañero nuevo</button>`
+          : `<div class="rounded-2xl bg-[#091A15]/85 border border-[#F59E0B]/45 p-4 space-y-2.5"><div class="flex items-center justify-between"><span class="text-xs font-bold text-[#FDE68A]">➕ Agregar compañero para votar</span><button id="btn-back-to-list" class="text-xs text-[#A8C9BA] hover:text-white cursor-pointer">← Volver</button></div><input id="new-cand-input" type="text" value="${esc(state.newCandidateName)}" placeholder="Nombre y Apellido (ej. Carlos Gómez)" class="w-full rounded-xl bg-[#112B23] border border-white/15 focus:border-[#F59E0B] px-3.5 py-2.5 text-sm text-white outline-none"/>${formattedNew && !isSelfNew ? `<p class="text-xs text-[#A7F3D0]">Se sumará como: <strong>${esc(formattedNew)}</strong>.</p>` : ''}${isSelfNew ? '<p class="text-xs text-[#FECACA]">Regla anti-autovoto: no podés votarte a vos mismo.</p>' : ''}</div>`}
+          ${state.modalError ? `<div class="rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/40 px-4 py-2 text-xs text-[#FECACA]">${esc(state.modalError)}</div>` : ''}
+          <button id="btn-submit-vote" ${!canSubmit || state.modalBusy ? 'disabled' : ''} class="w-full py-3.5 rounded-xl font-extrabold text-sm sm:text-base text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] disabled:opacity-45 cursor-pointer">${state.modalBusy ? 'Enviando...' : (state.isAddingNew && formattedNew ? `🗳️ Agregar a ${esc(formattedNew)} y Votar` : '🗳️ Confirmar mi Voto')}</button>
+          ${renderMentimeter(day.dayNumber, true, null)}`;
+      } else {
+        body = `<div class="space-y-2">${(day.triviaOptions || []).map((opt, idx) => `<button data-pick-trivia="${idx}" class="w-full flex items-center gap-3 px-4 py-3 rounded-xl border text-left text-sm font-semibold cursor-pointer ${state.selectedTriviaIndex === idx ? 'bg-[#F59E0B]/20 border-[#F59E0B] text-white' : 'bg-[#091A15]/80 border-white/10 text-[#DCEEE6]'}"><span class="w-7 h-7 rounded-lg flex items-center justify-center font-extrabold text-xs ${state.selectedTriviaIndex === idx ? 'bg-[#F59E0B] text-[#0B1F1A]' : 'bg-white/10 text-[#FDE68A]'}">${String.fromCharCode(65 + idx)}</span><span>${esc(opt)}</span></button>`).join('')}</div>${state.modalError ? `<div class="rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/40 px-4 py-2 text-xs text-[#FECACA]">${esc(state.modalError)}</div>` : ''}<button id="btn-submit-trivia" ${state.selectedTriviaIndex === null || state.modalBusy ? 'disabled' : ''} class="w-full py-3.5 rounded-xl font-extrabold text-sm text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] disabled:opacity-45 cursor-pointer">${state.modalBusy ? 'Validando...' : '✨ Enviar mi respuesta'}</button>`;
+      }
+      return `<div class="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/75 backdrop-blur-sm p-0 sm:p-4"><div class="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-[#112B23] border border-[#F59E0B]/45 p-5 sm:p-6 space-y-4 shadow-2xl"><div class="flex items-start justify-between gap-3"><div class="flex items-center gap-3">${giftSvg(day.dayNumber, 'active', 'sm')}<div><p class="text-xs font-extrabold uppercase text-[#F59E0B]">Día ${day.dayNumber} · ${esc(day.scheduledDate)}</p><h2 class="font-display text-xl font-bold text-white">${esc(day.title)}</h2></div></div><button id="btn-x-modal" class="w-8 h-8 rounded-full bg-white/10 text-white cursor-pointer">✕</button></div><div class="rounded-2xl bg-[#091A15]/80 border border-white/10 p-3.5 text-sm text-[#E4F2EC]">${esc(day.prompt)}</div>${body}</div></div>`;
+    }
+
+    function renderAdmin() {
+      if (!state.adminUnlocked) {
+        return `<div class="min-h-dvh flex items-center justify-center px-4 py-10"><div class="w-full max-w-md rounded-3xl bg-[#112B23]/95 border border-[#F59E0B]/35 p-7 space-y-5 shadow-2xl"><div class="text-center space-y-2"><div class="mx-auto w-14 h-14 rounded-2xl bg-[#F59E0B]/20 border border-[#F59E0B]/40 flex items-center justify-center text-2xl">🔐</div><p class="text-xs font-bold uppercase text-[#FCD34D]">${CONFIG.brandTitle}</p><h1 class="font-display text-2xl font-bold text-white">Panel de Administración</h1></div><form id="admin-login-form" class="space-y-4"><input id="admin-pass" type="password" placeholder="Contraseña maestra..." required class="w-full rounded-xl bg-[#091A15] border border-white/15 px-4 py-3 text-white outline-none"/>${state.adminPassError ? `<div class="rounded-xl bg-[#EF4444]/15 border border-[#EF4444]/40 px-4 py-2 text-xs text-[#FECACA]">${esc(state.adminPassError)}</div>` : ''}<button type="submit" class="w-full py-3.5 rounded-xl font-extrabold text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] cursor-pointer">Ingresar</button></form></div></div>`;
+      }
+      const winners = state.days.filter(d => d.winnerName);
+      const votingDays = state.days.filter(d => d.type === 'voting');
+      let tabContent = '';
+      if (state.adminTab === 'days') {
+        tabContent = `<div class="grid grid-cols-1 md:grid-cols-2 gap-4">${state.days.map(day => {
+          const cnt = state.participations.filter(p => p.dayNumber === day.dayNumber).length;
+          return `<div class="rounded-2xl p-5 border flex flex-col justify-between gap-3 ${day.status === 'active' ? 'bg-[#143329] border-[#F59E0B]/65' : day.status === 'finished' ? 'bg-[#102921] border-[#10B981]/35' : 'bg-[#0F241D]/80 border-white/10'}">
+            <div class="space-y-2">
+              <div class="flex items-center justify-between text-xs"><span class="px-2 py-0.5 rounded bg-[#F59E0B]/20 text-[#FDE68A] font-extrabold">Día ${day.dayNumber} · ${esc(day.scheduledDate)} · ${TYPE_LABELS[day.type]}</span><button data-edit-day="${day.dayNumber}" class="px-2.5 py-1 rounded-lg bg-white/10 text-[#FDE68A] font-semibold cursor-pointer">✏️ Editar</button></div>
+              <h3 class="font-display text-lg font-bold text-white">${esc(day.title)}</h3>
+              <p class="text-xs text-[#C1DDD0]">${esc(day.prompt)}</p>
+              <p class="text-xs text-[#B7D5C7]">Participaciones: <strong class="text-white">${cnt}</strong> ${day.winnerName ? `· 🏆 <strong class="text-[#FDE68A]">${esc(day.winnerName)}</strong>` : ''}</p>
+            </div>
+            <div class="space-y-2 pt-2 border-t border-white/10">
+              <div class="grid grid-cols-3 gap-1.5">${['locked', 'active', 'finished'].map(st => `<button data-set-status="${day.dayNumber}:${st}" class="py-1.5 rounded-lg text-xs font-bold cursor-pointer ${day.status === st ? (st === 'active' ? 'bg-[#F59E0B] text-[#0B1F1A]' : st === 'finished' ? 'bg-[#10B981] text-[#062016]' : 'bg-white/25 text-white') : 'bg-white/8 text-[#A8C8B9]'}">${st === 'locked' ? 'Bloqueado' : st === 'active' ? 'Activo' : 'Finalizado'}</button>`).join('')}</div>
+              ${day.status === 'active' ? `<button data-draw-day="${day.dayNumber}" class="w-full py-2.5 px-3 rounded-xl font-extrabold text-xs text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] cursor-pointer">🎰 ${day.type === 'voting' ? 'Cerrar Votación y Anunciar' : 'Ejecutar Sorteo en Ruleta'}</button>` : ''}
+            </div>
+          </div>`;
+        }).join('')}</div>`;
+      } else if (state.adminTab === 'metrics') {
+        const filteredUsers = state.participants.filter(p => !state.adminUserSearch.trim() || p.fullName.toLowerCase().includes(state.adminUserSearch.trim().toLowerCase()));
+        tabContent = `<div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div class="rounded-2xl bg-[#112B23] border border-white/10 p-4"><p class="text-[11px] uppercase font-bold text-[#9EC1B2]">Equipo</p><p class="font-display text-2xl font-extrabold text-white mt-1">${state.participants.length}</p></div>
+            <div class="rounded-2xl bg-[#112B23] border border-white/10 p-4"><p class="text-[11px] uppercase font-bold text-[#9EC1B2]">Ganadores</p><p class="font-display text-2xl font-extrabold text-[#10B981] mt-1">${winners.length}/10</p></div>
+            <div class="rounded-2xl bg-[#112B23] border border-white/10 p-4"><p class="text-[11px] uppercase font-bold text-[#9EC1B2]">Mensajes</p><p class="font-display text-2xl font-extrabold text-[#FDE68A] mt-1">${state.messages.length}</p></div>
+            <div class="rounded-2xl bg-[#112B23] border border-white/10 p-4"><p class="text-[11px] uppercase font-bold text-[#9EC1B2]">Fotos</p><p class="font-display text-2xl font-extrabold text-[#FDE68A] mt-1">${state.photos.length}</p></div>
+          </div>
+          ${votingDays.length ? `<section class="rounded-3xl bg-[#112B23] border border-[#F59E0B]/30 p-5 space-y-3"><div class="flex items-center justify-between flex-wrap gap-2"><h3 class="font-display text-lg font-bold text-white">Monitor Mentimeter en Vivo</h3><div class="flex gap-1.5">${votingDays.map(v => `<button data-select-vday="${v.dayNumber}" class="px-3 py-1 rounded-lg text-xs font-bold cursor-pointer ${state.adminVoteDay === v.dayNumber ? 'bg-[#F59E0B] text-[#0B1F1A]' : 'bg-white/10 text-[#CBE3D8]'}">Día ${v.dayNumber}</button>`).join('')}</div></div>${renderMentimeter(state.adminVoteDay, true, null)}</section>` : ''}
+          <section class="rounded-3xl bg-[#112B23] border border-white/10 p-5 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2"><h3 class="font-display text-lg font-bold text-white">👥 Participantes (${state.participants.length})</h3><div class="flex gap-2"><input id="admin-u-search" value="${esc(state.adminUserSearch)}" placeholder="Filtrar..." class="rounded-xl bg-[#091A15] border border-white/15 px-3 py-1.5 text-xs text-white outline-none"/><button id="btn-toggle-pins" class="px-3 py-1.5 rounded-xl bg-white/10 text-xs font-semibold text-[#D6EAE1] cursor-pointer">${state.adminShowPins ? 'Ocultar PINes' : 'Ver PINes'}</button></div></div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">${filteredUsers.map(u => `<div class="rounded-xl bg-[#091A15] border border-white/10 px-3.5 py-2.5 flex items-center justify-between gap-2 text-xs"><div><p class="font-bold text-white">${esc(u.fullName)}</p>${!u.isRegistered ? '<p class="text-[#B8D5C7]">Nominado (sin registro)</p>' : (state.adminShowPins && u.pin ? `<p class="text-[#FCD34D]">PIN: ${esc(u.pin)}</p>` : '')}</div>${u.hasWon ? `<span class="px-2 py-0.5 rounded-full bg-[#F59E0B]/20 text-[#FDE68A] font-bold">Ganó Día ${u.wonDay}</span>` : '<span class="px-2 py-0.5 rounded-full bg-[#10B981]/15 text-[#A7F3D0]">Elegible</span>'}</div>`).join('') || '<p class="text-xs text-[#A6C7B8]">Sin registros todavía.</p>'}</div>
+          </section>
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <section class="rounded-3xl bg-[#112B23] border border-white/10 p-5 space-y-2.5"><h3 class="font-display text-lg font-bold text-white">💬 Moderar Mensajes (${state.messages.length})</h3><div class="max-h-56 overflow-y-auto space-y-2">${state.messages.map(m => `<div class="rounded-xl bg-[#091A15] border border-white/10 p-3 flex items-start justify-between gap-2 text-xs"><div><p class="text-white">“${esc(m.content)}”</p><p class="text-[#FDE68A] mt-1">— ${esc(m.authorName)}</p></div><button data-admin-del-msg="${m.id}" class="text-[#FCA5A5] cursor-pointer shrink-0">✕</button></div>`).join('') || '<p class="text-xs text-[#A6C7B8]">Sin mensajes.</p>'}</div></section>
+            <section class="rounded-3xl bg-[#112B23] border border-white/10 p-5 space-y-2.5"><h3 class="font-display text-lg font-bold text-white">📸 Moderar Fotos (${state.photos.length})</h3><div class="grid grid-cols-3 gap-2 max-h-56 overflow-y-auto">${state.photos.map(p => `<div class="relative rounded-xl overflow-hidden aspect-square bg-black border border-white/10"><img src="${p.imageData}" class="w-full h-full object-cover"/><button data-admin-del-photo="${p.id}" class="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/80 text-[#FCA5A5] text-xs cursor-pointer">✕</button></div>`).join('') || '<p class="text-xs text-[#A6C7B8] col-span-3">Sin fotos.</p>'}</div></section>
+          </div>`;
+      } else {
+        const inv = getInviteUrl();
+        const tvUrl = `${getBaseUrl()}#/tv`;
+        tabContent = `<div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          <section class="rounded-3xl bg-[#112B23] border border-[#F59E0B]/30 p-6 space-y-4">
+            <h2 class="font-display text-xl font-bold text-white">📱 Código QR Oficial y Modo TV</h2>
+            <div class="flex flex-col items-center gap-3"><div class="p-4 rounded-2xl bg-[#FFFDF7] shadow-xl"><canvas id="admin-qr-canvas" class="block rounded-lg"></canvas></div>
+            <div class="w-full rounded-xl bg-[#091A15] border border-white/15 px-3.5 py-2.5 flex items-center justify-between gap-2"><code class="text-xs text-[#FDE68A] truncate">${esc(inv)}</code><button id="btn-copy-inv" class="px-2.5 py-1 rounded bg-white/10 text-xs font-bold text-white cursor-pointer">Copiar</button></div>
+            <button id="btn-dl-qr" class="w-full py-3 rounded-xl bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] text-[#0B1F1A] font-extrabold text-sm cursor-pointer">⬇ Descargar QR en PNG para imprimir</button>
+            <div class="w-full rounded-xl bg-[#091A15] border border-white/15 px-3.5 py-2.5 flex items-center justify-between gap-2"><code class="text-xs text-[#6EE7B7] truncate">${esc(tvUrl)}</code><button id="btn-open-tv-2" class="px-2.5 py-1 rounded bg-white/10 text-xs font-bold text-white cursor-pointer">Abrir TV</button></div></div>
+          </section>
+          <section class="rounded-3xl bg-[#1A1414] border-2 border-[#EF4444]/45 p-6 flex flex-col justify-between gap-4">
+            <div class="space-y-2"><h2 class="font-display text-xl font-bold text-white">⚠️ Resetear Entorno a Producción</h2><p class="text-xs sm:text-sm text-[#E5C5C5]">Borra usuarios (${state.participants.length}), votos (${state.participations.length}), mensajes (${state.messages.length}), fotos (${state.photos.length}) y ganadores (${winners.length}), devolviendo los 10 días a <strong>Bloqueado</strong> conservando intactos todos los títulos, consignas y trivias.</p></div>
+            <button id="btn-open-reset" class="w-full py-3.5 rounded-xl bg-[#EF4444] hover:bg-[#DC2626] font-extrabold text-sm text-white cursor-pointer">Resetear Entorno a Producción</button>
+          </section>
+        </div>`;
+      }
+      return `<header class="sticky top-0 z-30 bg-[#0B1F1A]/92 backdrop-blur-md border-b border-white/10 px-4 py-3.5"><div class="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-3"><div><p class="text-[11px] font-bold uppercase text-[#F59E0B]">${CONFIG.brandTitle}</p><h1 class="font-display text-xl font-bold text-white">Panel de Administración · Supabase Realtime</h1></div><div class="flex gap-1.5 flex-wrap"><button id="btn-go-tv" class="px-3 py-2 rounded-xl bg-[#EF4444]/20 border border-[#EF4444]/45 text-xs font-bold text-[#FECACA] cursor-pointer">📺 Modo TV</button><button data-atab="days" class="px-3 py-2 rounded-xl text-xs font-bold cursor-pointer ${state.adminTab === 'days' ? 'bg-[#F59E0B] text-[#0B1F1A]' : 'bg-white/10 text-[#CBE3D8]'}">10 Días</button><button data-atab="metrics" class="px-3 py-2 rounded-xl text-xs font-bold cursor-pointer ${state.adminTab === 'metrics' ? 'bg-[#F59E0B] text-[#0B1F1A]' : 'bg-white/10 text-[#CBE3D8]'}">Métricas</button><button data-atab="tools" class="px-3 py-2 rounded-xl text-xs font-bold cursor-pointer ${state.adminTab === 'tools' ? 'bg-[#F59E0B] text-[#0B1F1A]' : 'bg-white/10 text-[#CBE3D8]'}">QR y Reset</button></div></div></header>
+        ${state.adminToast ? `<div class="max-w-5xl mx-auto px-4 pt-4"><div class="rounded-2xl bg-[#10B981]/20 border border-[#10B981]/50 px-4 py-3 text-xs sm:text-sm text-[#D1FAE5]">${esc(state.adminToast)}</div></div>` : ''}
+        <main class="max-w-5xl mx-auto px-4 py-6 space-y-5">${tabContent}</main>
+        ${state.adminEditDay ? renderEditDayModal() : ''}${state.adminDrawDay ? renderDrawModal() : ''}${state.resetStep > 0 ? renderResetModal() : ''}`;
+    }
+
+    function renderEditDayModal() {
+      const day = state.days.find(d => d.dayNumber === state.adminEditDay);
+      if (!day) return '';
+      const opts = day.triviaOptions || ['Opción A', 'Opción B', 'Opción C'];
+      return `<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4"><div class="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-3xl bg-[#112B23] border border-[#F59E0B]/45 p-6 space-y-4"><div class="flex items-center justify-between"><h3 class="font-display text-xl font-bold text-white">Editar Día ${day.dayNumber}</h3><button id="btn-close-edit" class="w-8 h-8 rounded-full bg-white/10 text-white cursor-pointer">✕</button></div><form id="edit-day-form" class="space-y-3 text-sm"><div class="grid grid-cols-2 gap-3"><input id="ed-date" value="${esc(day.scheduledDate)}" required class="rounded-xl bg-[#091A15] border border-white/15 px-3 py-2 text-white"/><select id="ed-type" class="rounded-xl bg-[#091A15] border border-white/15 px-3 py-2 text-white"><option value="raffle" ${day.type === 'raffle' ? 'selected' : ''}>Sorteo</option><option value="voting" ${day.type === 'voting' ? 'selected' : ''}>Votación</option><option value="trivia" ${day.type === 'trivia' ? 'selected' : ''}>Trivia</option></select></div><input id="ed-title" value="${esc(day.title)}" required class="w-full rounded-xl bg-[#091A15] border border-white/15 px-3 py-2 text-white"/><textarea id="ed-prompt" rows="3" required class="w-full rounded-xl bg-[#091A15] border border-white/15 px-3 py-2 text-white">${esc(day.prompt)}</textarea><div id="ed-trivia-box" class="${day.type === 'trivia' ? '' : 'hidden'} rounded-xl bg-[#091A15] border border-white/10 p-3 space-y-2">${opts.map((o, i) => `<div class="flex items-center gap-2"><input type="radio" name="ed-correct" value="${i}" ${(day.triviaCorrectIndex ?? 0) === i ? 'checked' : ''}/><input id="ed-opt-${i}" value="${esc(o)}" class="flex-1 rounded-lg bg-[#112B23] border border-white/15 px-2.5 py-1.5 text-xs text-white"/></div>`).join('')}</div><button type="submit" class="w-full py-3 rounded-xl font-extrabold text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] cursor-pointer">Guardar en Supabase</button></form></div></div>`;
+    }
+
+    function renderDrawModal() {
+      const day = state.days.find(d => d.dayNumber === state.adminDrawDay);
+      if (!day) return '';
+      const pool = computeDrawPool(day);
+      return `<div class="fixed inset-0 z-50 flex items-center justify-center bg-[#06120E]/92 p-4"><div class="relative w-full max-w-xl rounded-3xl bg-gradient-to-b from-[#133227] to-[#0A1914] border-2 border-[#F59E0B]/60 p-7 text-center space-y-5">${state.drawPhase !== 'running' ? '<button id="btn-close-draw" class="absolute top-4 right-4 w-9 h-9 rounded-full bg-white/10 text-white cursor-pointer">✕</button>' : ''}<h2 class="font-display text-3xl font-bold text-white">Día ${day.dayNumber}: ${esc(day.title)}</h2>${pool.mode === 'voting_tiebreak' ? `<p class="text-xs font-bold text-[#FECACA]">⚖️ ¡EMPATE EN 1° PUESTO (${pool.topVotes} votos)! Ruleta automática de desempate</p>` : ''}${pool.candidates.length === 0 ? '<p class="text-sm text-[#FECACA]">Todavía no hay candidatos elegibles para este día.</p>' : state.drawPhase === 'ready' ? `<div class="space-y-4"><div class="flex flex-wrap justify-center gap-1.5">${pool.mode === 'voting_clear' ? '<p class="text-sm text-[#CBE3D8]">Hay ganador por mayoría de votos. Iniciá el conteo para revelarlo en pantalla.</p>' : pool.candidates.map(c => `<span class="px-3 py-1 rounded-full bg-white/10 border border-[#F59E0B]/30 text-xs font-semibold text-white">${esc(c.fullName)}</span>`).join('')}</div><button id="btn-run-draw" class="px-7 py-3.5 rounded-2xl font-extrabold text-base text-[#0B1F1A] bg-gradient-to-r from-[#FEF08A] via-[#F59E0B] to-[#FBBF24] cursor-pointer">🎰 ${pool.mode === 'voting_clear' ? 'Iniciar Conteo y Revelar' : '¡Girar Ruleta Oficial!'}</button></div>` : state.drawPhase === 'running' ? `<div class="py-6">${pool.mode === 'voting_clear' ? `<div class="font-display text-8xl font-extrabold text-[#FDE68A]">${state.drawCountdown}</div>` : `<div class="rounded-2xl bg-[#091915] border-2 border-[#F59E0B] py-6 px-4 font-display text-3xl font-extrabold text-white">${esc(state.drawHighlight)}</div>`}</div>` : `<div class="space-y-3"><p class="text-xs font-extrabold uppercase text-[#F59E0B]">🏆 ¡Ganador/a Oficial Guardado/a!</p><p class="font-display text-4xl font-extrabold text-white">${esc(state.drawWinner?.fullName || '')}</p><button id="btn-finish-draw" class="px-6 py-2.5 rounded-xl bg-[#10B981] text-xs font-extrabold text-[#062016] cursor-pointer">Finalizar</button></div>`}</div></div>`;
+    }
+
+    function renderResetModal() {
+      return `<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4"><div class="w-full max-w-md rounded-3xl bg-[#181616] border-2 border-[#EF4444]/60 p-6 space-y-4"><h3 class="font-display text-xl font-bold text-white">⚠️ Confirmación (${state.resetStep}/2)</h3>${state.resetStep === 1 ? `<p class="text-sm text-[#E2D4D4]">Se eliminarán usuarios, votos, mensajes, fotos y ganadores de Supabase, y los 10 días volverán a <strong>Bloqueado</strong> conservando intactas las consignas.</p><div class="flex gap-2"><button id="btn-reset-cancel" class="flex-1 py-2.5 rounded-xl bg-white/10 text-sm font-bold text-white cursor-pointer">Cancelar</button><button id="btn-reset-next" class="flex-1 py-2.5 rounded-xl bg-[#EF4444] text-sm font-extrabold text-white cursor-pointer">Continuar</button></div>` : `<p class="text-sm text-[#E2D4D4]">Escribí <strong class="text-[#FCA5A5]">RESETEAR</strong>:</p><input id="input-reset-word" value="${esc(state.resetWord)}" placeholder="RESETEAR" class="w-full rounded-xl bg-black/50 border border-[#EF4444]/50 px-4 py-2.5 text-center font-extrabold text-white uppercase outline-none"/><div class="flex gap-2"><button id="btn-reset-cancel" class="flex-1 py-2.5 rounded-xl bg-white/10 text-sm font-bold text-white cursor-pointer">Cancelar</button><button id="btn-reset-exec" ${state.resetWord.trim().toUpperCase() !== 'RESETEAR' ? 'disabled' : ''} class="flex-1 py-2.5 rounded-xl bg-[#EF4444] disabled:opacity-40 text-sm font-extrabold text-white cursor-pointer">Confirmar Reset</button></div>`}</div></div>`;
+    }
+
+    // =========================================================================
+    // 6. RENDER & EVENTOS SUPABASE
+    // =========================================================================
+    function render() {
+      const root = document.getElementById('app');
+      if (state.loading) {
+        root.innerHTML = '<div class="min-h-dvh flex flex-col items-center justify-center gap-3 text-center px-4"><div class="text-4xl animate-bounce">🎁</div><p class="font-display text-xl font-bold text-white">Conectando Calendario Festivo...</p></div>';
+        return;
+      }
+      if (state.route === 'tv') {
+        root.innerHTML = renderTvView();
+        const qrEl = document.getElementById('tv-qr-canvas');
+        if (qrEl && window.QRCode) window.QRCode.toCanvas(qrEl, getInviteUrl(), { width: 68, margin: 1, color: { dark: '#0B1F1A', light: '#FFFDF7' } });
+        document.getElementById('btn-tv-fs')?.addEventListener('click', () => { try { if (!document.fullscreenElement) document.documentElement.requestFullscreen(); else document.exitFullscreen(); } catch {} });
+        document.querySelectorAll('[data-tv-vday]').forEach(b => b.onclick = () => { state.tvVoteDay = Number(b.dataset.tvVday); render(); });
+        document.getElementById('btn-tv-prev')?.addEventListener('click', () => { state.tvPhotoIdx = (state.tvPhotoIdx - 1 + state.photos.length) % state.photos.length; render(); });
+        document.getElementById('btn-tv-next')?.addEventListener('click', () => { state.tvPhotoIdx = (state.tvPhotoIdx + 1) % state.photos.length; render(); });
+        document.getElementById('btn-tv-pause')?.addEventListener('click', () => { state.tvPaused = !state.tvPaused; render(); });
+        return;
+      }
+      if (state.route === 'admin') {
+        root.innerHTML = renderAdmin();
+        bindAdminEvents();
+        return;
+      }
+      const user = getCurrentUser();
+      const tokenParam = new URLSearchParams(window.location.search).get('token')?.trim() ?? null;
+      const validToken = tokenParam !== null && tokenParam === CONFIG.qrToken;
+      const invalidToken = tokenParam !== null && tokenParam !== CONFIG.qrToken;
+      if (invalidToken) { root.innerHTML = renderRestricted(true); return; }
+      if (!user && !validToken) { root.innerHTML = renderRestricted(false); return; }
+      if (!user) { root.innerHTML = renderOnboarding(); bindOnboardingEvents(); return; }
+      root.innerHTML = renderTeamBoard(user);
+      bindTeamEvents(user);
+    }
+
+    function bindOnboardingEvents() {
+      document.getElementById('ob-tab-reg').onclick = () => { state.obTab = 'register'; state.obError = ''; render(); };
+      document.getElementById('ob-tab-rec').onclick = () => { state.obTab = 'recover'; state.obError = ''; render(); };
+      const nIn = document.getElementById('ob-name'), pIn = document.getElementById('ob-pin');
+      nIn.oninput = (e) => { state.obName = e.target.value; };
+      pIn.oninput = (e) => { state.obPin = e.target.value.replace(/\D/g, '').slice(0, 4); e.target.value = state.obPin; };
+      document.getElementById('onboarding-form').onsubmit = async (e) => {
+        e.preventDefault();
+        state.obName = nIn.value; state.obPin = pIn.value.replace(/\D/g, '').slice(0, 4);
+        if (!isValidFullName(state.obName)) { state.obError = 'Ingresá Nombre y Apellido completos.'; render(); return; }
+        if (!/^[0-9]{4}$/.test(state.obPin)) { state.obError = 'El PIN debe tener 4 dígitos numéricos.'; render(); return; }
+        state.obBusy = true; state.obError = ''; render();
+        try {
+          const norm = normalizeName(state.obName), full = formatDisplayName(state.obName);
+          const { data: existing, error: lErr } = await sb.from('participants').select('*').eq('normalized_name', norm).maybeSingle();
+          if (lErr) throw lErr;
+          let participant = null;
+          if (state.obTab === 'register') {
+            if (existing) {
+              if (existing.pin !== null && existing.is_registered !== false) throw new Error('Ese nombre ya está registrado. Usá "Ya me registré" con tu PIN.');
+              const { data: claimed, error: cErr } = await sb.from('participants').update({ full_name: full, pin: state.obPin, is_registered: true }).eq('id', existing.id).select('*').single();
+              if (cErr) throw cErr;
+              participant = claimed;
+            } else {
+              const { data: created, error: iErr } = await sb.from('participants').insert({ full_name: full, normalized_name: norm, pin: state.obPin, is_registered: true }).select('*').single();
+              if (iErr) throw iErr;
+              participant = created;
+            }
+            fireConfetti(75);
+          } else {
+            if (!existing) throw new Error('No encontramos ese Nombre y Apellido.');
+            if (existing.pin === null || existing.is_registered === false) throw new Error('Un compañero ya te nominó. Usá "Primera vez" para crear tu PIN.');
+            if (existing.pin !== state.obPin) throw new Error('El PIN de 4 dígitos no coincide.');
+            participant = existing;
+          }
+          state.sessionUserId = participant.id;
+          localStorage.setItem(SESSION_KEY, participant.id);
+          await loadSnapshot();
+        } catch (err) {
+          state.obError = err.message || 'No pudimos completar tu ingreso.';
+        } finally { state.obBusy = false; render(); }
+      };
+    }
+
+    function bindTeamEvents(user) {
+      document.getElementById('btn-logout').onclick = () => { state.sessionUserId = null; localStorage.removeItem(SESSION_KEY); render(); };
+      document.querySelectorAll('[data-team-tab]').forEach(b => b.onclick = () => { state.teamTab = b.dataset.teamTab; render(); });
+
+      // Messages
+      document.querySelectorAll('[data-msg-tag]').forEach(b => b.onclick = () => { state.msgTag = b.dataset.msgTag; render(); });
+      const mIn = document.getElementById('msg-input');
+      if (mIn) mIn.oninput = (e) => { state.msgText = e.target.value; state.msgError = ''; };
+      const mForm = document.getElementById('msg-form');
+      if (mForm) mForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const txt = (document.getElementById('msg-input')?.value || '').trim();
+        if (txt.length < 2) { state.msgError = 'Escribí un mensaje antes de publicar.'; render(); return; }
+        state.msgBusy = true; render();
+        try {
+          const { error } = await sb.from('shared_messages').insert({ user_id: user.id, author_name: user.fullName, tag: state.msgTag, content: txt });
+          if (error) throw error;
+          state.msgText = ''; fireConfetti(50); await loadSnapshot();
+        } catch (err) { state.msgError = err.message; }
+        finally { state.msgBusy = false; render(); }
+      };
+      document.querySelectorAll('[data-del-msg]').forEach(b => b.onclick = async () => { await sb.from('shared_messages').delete().eq('id', b.dataset.delMsg); await loadSnapshot(); });
+
+      // Photos
+      const fIn = document.getElementById('photo-file-input');
+      document.getElementById('btn-pick-photo')?.addEventListener('click', () => fIn?.click());
+      if (fIn) fIn.onchange = async (e) => {
+        const f = e.target.files?.[0]; if (!f) return;
+        try { state.photoPreview = await compressPhotoFile(f); state.photoError = ''; render(); } catch (err) { state.photoError = err.message; render(); }
+      };
+      document.getElementById('btn-clear-photo')?.addEventListener('click', () => { state.photoPreview = ''; state.photoCaption = ''; render(); });
+      const cIn = document.getElementById('photo-caption-input');
+      if (cIn) cIn.oninput = (e) => { state.photoCaption = e.target.value; };
+      const pForm = document.getElementById('photo-form');
+      if (pForm) pForm.onsubmit = async (e) => {
+        e.preventDefault(); if (!state.photoPreview) return;
+        state.photoBusy = true; render();
+        try {
+          const { error } = await sb.from('shared_photos').insert({ user_id: user.id, author_name: user.fullName, image_data: state.photoPreview, caption: state.photoCaption.trim() });
+          if (error) throw error;
+          state.photoPreview = ''; state.photoCaption = ''; fireConfetti(60); await loadSnapshot();
+        } catch (err) { state.photoError = err.message; }
+        finally { state.photoBusy = false; render(); }
+      };
+      document.querySelectorAll('[data-del-photo]').forEach(b => b.onclick = async () => { await sb.from('shared_photos').delete().eq('id', b.dataset.delPhoto); await loadSnapshot(); });
+
+      // Calendar & Modal
+      document.querySelectorAll('[data-open-day]').forEach(b => b.onclick = () => { state.openDayModal = Number(b.dataset.openDay); state.voteSearch = ''; state.selectedCandidateId = null; state.isAddingNew = false; state.newCandidateName = ''; state.selectedTriviaIndex = null; state.modalError = ''; render(); });
+      document.querySelectorAll('[data-toggle-chart]').forEach(b => b.onclick = () => { const d = Number(b.dataset.toggleChart); state.expandedCharts[d] = !state.expandedCharts[d]; render(); });
+      const closeModal = () => { state.openDayModal = null; render(); };
+      document.getElementById('btn-x-modal')?.addEventListener('click', closeModal);
+      document.getElementById('btn-close-modal')?.addEventListener('click', closeModal);
+      const sIn = document.getElementById('vote-search-input');
+      if (sIn) sIn.oninput = (e) => { state.voteSearch = e.target.value; render(); document.getElementById('vote-search-input')?.focus(); };
+      const openAdd = () => { state.isAddingNew = true; state.selectedCandidateId = null; state.newCandidateName = state.voteSearch.trim(); state.modalError = ''; render(); document.getElementById('new-cand-input')?.focus(); };
+      document.getElementById('btn-add-from-search')?.addEventListener('click', openAdd);
+      document.getElementById('btn-toggle-add-cand')?.addEventListener('click', openAdd);
+      document.getElementById('btn-back-to-list')?.addEventListener('click', () => { state.isAddingNew = false; state.newCandidateName = ''; state.modalError = ''; render(); });
+      const ncIn = document.getElementById('new-cand-input');
+      if (ncIn) ncIn.oninput = (e) => { state.newCandidateName = e.target.value; state.modalError = ''; render(); const el = document.getElementById('new-cand-input'); if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } };
+      document.querySelectorAll('[data-pick-cand]').forEach(b => b.onclick = () => { state.selectedCandidateId = b.dataset.pickCand; state.modalError = ''; render(); });
+      document.querySelectorAll('[data-pick-trivia]').forEach(b => b.onclick = () => { state.selectedTriviaIndex = Number(b.dataset.pickTrivia); state.modalError = ''; render(); });
+
+      document.getElementById('btn-submit-raffle')?.addEventListener('click', async () => {
+        state.modalBusy = true; state.modalError = ''; render();
+        try {
+          const { error } = await sb.from('participations').insert({ user_id: user.id, day_number: state.openDayModal, type: 'raffle' });
+          if (error) throw new Error(error.code === '23505' ? '¡Ya participaste hoy!' : error.message);
+          fireConfetti(80); await loadSnapshot();
+        } catch (err) { state.modalError = err.message; }
+        finally { state.modalBusy = false; render(); }
+      });
+
+      document.getElementById('btn-submit-vote')?.addEventListener('click', async () => {
+        state.modalBusy = true; state.modalError = ''; render();
+        try {
+          let targetId = state.selectedCandidateId;
+          if (state.isAddingNew) {
+            if (!isValidFullName(state.newCandidateName)) throw new Error('Ingresá Nombre y Apellido completos.');
+            const norm = normalizeName(state.newCandidateName), full = formatDisplayName(state.newCandidateName);
+            if (norm === user.normalizedName) throw new Error('Regla anti-autovoto: no podés votarte a vos mismo.');
+            const { data: existing } = await sb.from('participants').select('*').eq('normalized_name', norm).maybeSingle();
+            if (existing) {
+              if (existing.id === user.id) throw new Error('Regla anti-autovoto: no podés votarte a vos mismo.');
+              if (existing.has_won) throw new Error('Ese compañero ya ganó un día anterior.');
+              targetId = existing.id;
+            } else {
+              const { data: created, error: cErr } = await sb.from('participants').insert({ full_name: full, normalized_name: norm, pin: null, is_registered: false }).select('id').single();
+              if (cErr) throw cErr;
+              targetId = created.id;
+            }
+          }
+          const { error } = await sb.from('participations').insert({ user_id: user.id, day_number: state.openDayModal, type: 'voting', voted_for_user_id: targetId });
+          if (error) throw new Error(error.code === '23505' ? '¡Ya emitiste tu voto hoy!' : error.message);
+          state.isAddingNew = false; state.newCandidateName = ''; fireConfetti(80); await loadSnapshot();
+        } catch (err) { state.modalError = err.message; }
+        finally { state.modalBusy = false; render(); }
+      });
+
+      document.getElementById('btn-submit-trivia')?.addEventListener('click', async () => {
+        state.modalBusy = true; state.modalError = ''; render();
+        try {
+          const { data, error } = await sb.from('participations').insert({ user_id: user.id, day_number: state.openDayModal, type: 'trivia', trivia_option_index: state.selectedTriviaIndex }).select('*').single();
+          if (error) throw new Error(error.code === '23505' ? '¡Ya respondiste la trivia hoy!' : error.message);
+          if (data?.is_correct) fireConfetti(85);
+          await loadSnapshot();
+        } catch (err) { state.modalError = err.message; }
+        finally { state.modalBusy = false; render(); }
+      });
+    }
+
+    function bindAdminEvents() {
+      const loginForm = document.getElementById('admin-login-form');
+      if (loginForm) {
+        loginForm.onsubmit = (e) => {
+          e.preventDefault();
+          if (document.getElementById('admin-pass').value.trim() === CONFIG.adminPassword) {
+            sessionStorage.setItem(ADMIN_KEY, 'true'); state.adminUnlocked = true; state.adminPassError = ''; render();
+          } else { state.adminPassError = 'Contraseña maestra incorrecta.'; render(); }
+        };
+        return;
+      }
+      document.getElementById('btn-go-tv')?.addEventListener('click', () => { window.location.hash = '#/tv'; });
+      document.getElementById('btn-open-tv-2')?.addEventListener('click', () => { window.location.hash = '#/tv'; });
+      document.querySelectorAll('[data-atab]').forEach(b => b.onclick = () => { state.adminTab = b.dataset.atab; render(); });
+      document.querySelectorAll('[data-select-vday]').forEach(b => b.onclick = () => { state.adminVoteDay = Number(b.dataset.selectVday); render(); });
+      document.getElementById('btn-toggle-pins')?.addEventListener('click', () => { state.adminShowPins = !state.adminShowPins; render(); });
+      const uS = document.getElementById('admin-u-search');
+      if (uS) uS.oninput = (e) => { state.adminUserSearch = e.target.value; render(); document.getElementById('admin-u-search')?.focus(); };
+
+      if (state.adminTab === 'tools') {
+        const qrEl = document.getElementById('admin-qr-canvas');
+        if (qrEl && window.QRCode) window.QRCode.toCanvas(qrEl, getInviteUrl(), { width: 220, margin: 2, color: { dark: '#0B1F1A', light: '#FFFDF7' } });
+        document.getElementById('btn-copy-inv')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(getInviteUrl()); showAdminToast('Enlace copiado.'); } catch {} });
+        document.getElementById('btn-dl-qr')?.addEventListener('click', () => {
+          if (!qrEl) return;
+          const a = document.createElement('a'); a.download = 'QR-Calendario-Festivo.png'; a.href = qrEl.toDataURL('image/png'); a.click();
+        });
+      }
+
+      document.querySelectorAll('[data-set-status]').forEach(b => b.onclick = async () => {
+        const [d, st] = b.dataset.setStatus.split(':');
+        await sb.from('calendar_days').update({ status: st, updated_at: new Date().toISOString() }).eq('day_number', Number(d));
+        await loadSnapshot(); showAdminToast(`Día ${d} → ${STATUS_LABELS[st]}`);
+      });
+      document.querySelectorAll('[data-admin-del-msg]').forEach(b => b.onclick = async () => { await sb.from('shared_messages').delete().eq('id', b.dataset.adminDelMsg); await loadSnapshot(); });
+      document.querySelectorAll('[data-admin-del-photo]').forEach(b => b.onclick = async () => { await sb.from('shared_photos').delete().eq('id', b.dataset.adminDelPhoto); await loadSnapshot(); });
+
+      document.querySelectorAll('[data-edit-day]').forEach(b => b.onclick = () => { state.adminEditDay = Number(b.dataset.editDay); render(); });
+      document.getElementById('btn-close-edit')?.addEventListener('click', () => { state.adminEditDay = null; render(); });
+      const edType = document.getElementById('ed-type');
+      if (edType) edType.onchange = (e) => { document.getElementById('ed-trivia-box')?.classList.toggle('hidden', e.target.value !== 'trivia'); };
+      const editForm = document.getElementById('edit-day-form');
+      if (editForm) editForm.onsubmit = async (e) => {
+        e.preventDefault();
+        const type = document.getElementById('ed-type').value;
+        const payload = {
+          scheduled_date: document.getElementById('ed-date').value.trim(),
+          type,
+          title: document.getElementById('ed-title').value.trim(),
+          prompt: document.getElementById('ed-prompt').value.trim(),
+          trivia_options: type === 'trivia' ? [0, 1, 2].map(i => document.getElementById(`ed-opt-${i}`).value.trim()) : null,
+          trivia_correct_index: type === 'trivia' ? Number(editForm.querySelector('input[name="ed-correct"]:checked')?.value ?? 0) : null,
+          updated_at: new Date().toISOString()
+        };
+        await sb.from('calendar_days').update(payload).eq('day_number', state.adminEditDay);
+        state.adminEditDay = null; await loadSnapshot(); showAdminToast('Día guardado en Supabase.');
+      };
+
+      document.querySelectorAll('[data-draw-day]').forEach(b => b.onclick = () => { state.adminDrawDay = Number(b.dataset.drawDay); state.drawPhase = 'ready'; state.drawWinner = null; render(); });
+      document.getElementById('btn-close-draw')?.addEventListener('click', () => { state.adminDrawDay = null; render(); });
+      document.getElementById('btn-finish-draw')?.addEventListener('click', () => { state.adminDrawDay = null; render(); });
+      document.getElementById('btn-run-draw')?.addEventListener('click', () => {
+        const day = state.days.find(d => d.dayNumber === state.adminDrawDay);
+        const pool = computeDrawPool(day);
+        if (!pool.candidates.length) return;
+        state.drawPhase = 'running';
+        const rnd = new Uint32Array(1); crypto.getRandomValues(rnd);
+        const chosen = pool.candidates[pool.candidates.length === 1 ? 0 : rnd[0] % pool.candidates.length];
+        const saveWinner = async () => {
+          state.drawWinner = chosen; state.drawPhase = 'revealed';
+          await sb.from('participants').update({ has_won: true, won_day: day.dayNumber }).eq('id', chosen.id);
+          await sb.from('calendar_days').update({ status: 'finished', winner_id: chosen.id, winner_name: chosen.fullName, winner_method: pool.mode, updated_at: new Date().toISOString() }).eq('day_number', day.dayNumber);
+          fireConfetti(150); await loadSnapshot();
+        };
+        if (pool.mode === 'voting_clear') {
+          state.drawCountdown = 3; render();
+          setTimeout(() => { state.drawCountdown = 2; render(); }, 800);
+          setTimeout(() => { state.drawCountdown = 1; render(); }, 1600);
+          setTimeout(() => { void saveWinner(); }, 2400);
+        } else {
+          let step = 0, elapsed = 0;
+          for (let s = 0; s < 26; s++) {
+            elapsed += Math.round(55 + Math.pow(s / 26, 2.3) * 260);
+            setTimeout(() => { if (s === 25) void saveWinner(); else { state.drawHighlight = pool.candidates[step++ % pool.candidates.length].fullName; render(); } }, elapsed);
+          }
+        }
+      });
+
+      document.getElementById('btn-open-reset')?.addEventListener('click', () => { state.resetStep = 1; state.resetWord = ''; render(); });
+      document.getElementById('btn-reset-cancel')?.addEventListener('click', () => { state.resetStep = 0; state.resetWord = ''; render(); });
+      document.getElementById('btn-reset-next')?.addEventListener('click', () => { state.resetStep = 2; state.resetWord = ''; render(); });
+      const rw = document.getElementById('input-reset-word');
+      if (rw) rw.oninput = (e) => { state.resetWord = e.target.value; render(); document.getElementById('input-reset-word')?.focus(); };
+      document.getElementById('btn-reset-exec')?.addEventListener('click', async () => {
+        if (state.resetWord.trim().toUpperCase() !== 'RESETEAR') return;
+        const { error } = await sb.rpc('reset_production_environment');
+        if (error) { showAdminToast('Error al resetear: ' + error.message); return; }
+        localStorage.removeItem(SESSION_KEY); state.sessionUserId = null;
+        state.resetStep = 0; state.resetWord = '';
+        await loadSnapshot();
+        showAdminToast('Reset a Producción completado: datos de prueba eliminados y los 10 días volvieron a Bloqueado.');
+      });
+    }
+
+    // TV Auto-rotación en vivo
+    setInterval(() => { if (state.route === 'tv' && !state.tvPaused && state.photos.length > 1) { state.tvPhotoIdx = (state.tvPhotoIdx + 1) % state.photos.length; render(); } }, 7000);
+    setInterval(() => { if (state.route === 'tv' && state.messages.length > 1) { state.tvMsgIdx = (state.tvMsgIdx + 1) % state.messages.length; render(); } }, 6000);
+    setInterval(() => {
+      const w = state.days.filter(d => d.winnerName).length;
+      if (state.route === 'tv' && w > 4) { state.tvWinnerPage = (state.tvWinnerPage + 1) % Math.ceil(w / 4); render(); }
+    }, 8000);
+
+    // Nieve sutil
+    (function initSnow() {
+      const layer = document.getElementById('snow-layer');
+      let html = '';
+      for (let i = 0; i < 18; i++) {
+        html += `<span class="flake" style="left:${((i + 1) * 37 * 19) % 100}%;width:${i % 4 === 0 ? 6 : 3.5}px;height:${i % 4 === 0 ? 6 : 3.5}px;background:${i % 5 === 0 ? '#FDE68A' : '#FFFDF7'};--dur:${13 + (i % 10)}s;--del:${-(i * 1.3)}s"></span>`;
+      }
+      layer.innerHTML = html;
+    })();
+
+    void loadSnapshot();
+  </script>
+</body>
+</html>
